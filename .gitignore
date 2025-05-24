@@ -1,0 +1,33 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+
+# Django-related
+*.sqlite3
+db.sqlite3
+media/
+staticfiles/
+*.log
+
+# Django migrations (optional: remove if you want to commit them)
+**/migrations/*.py
+!**/migrations/__init__.py
+
+# Virtual environment
+venv/
+.env
+.env.*
+
+# IDEs and editors
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# AWS/Boto/GCP credentials
+*.pem
+*.key
+.aws/
+.gcloud/
