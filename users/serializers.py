@@ -2,11 +2,22 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth.password_validation import validate_password
+from django.contrib.auth.password_validation import validate_password as django_validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
+
 from .models import CustomUser
 
+def custom_validate_password(password):
+    try:
+        django_validate_password(password)
+    except DjangoValidationError:
+        raise serializers.ValidationError(
+            "Password must be at least 8 characters long and include letters, numbers, and special characters. Avoid common or numeric-only passwords."
+        )
+
 class RegisterSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, validators=[validate_password])
-    password2 = serializers.CharField(write_only=True)  # password confirmation
+    password = serializers.CharField(write_only=True, validators=[custom_validate_password])
+    password2 = serializers.CharField(write_only=True)
 
     class Meta:
         model = CustomUser
