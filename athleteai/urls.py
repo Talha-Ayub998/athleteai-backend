@@ -6,13 +6,16 @@ from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 
 schema_view = get_schema_view(
-   openapi.Info(
-      title="AthleteAI API",
-      default_version='v1',
-      description="API for AthleteAI portal",
-   ),
-   public=True,
-   permission_classes=(permissions.AllowAny,),
+    openapi.Info(
+        title="AthleteAI API",
+        default_version="v1",
+        description="API for AthleteAI portal",
+        terms_of_service="https://example.com/terms/",
+        contact=openapi.Contact(email="support@athleteai.com"),
+        license=openapi.License(name="BSD License"),
+    ),
+    public=True,
+    permission_classes=(permissions.AllowAny,),
 )
 
 urlpatterns = [
