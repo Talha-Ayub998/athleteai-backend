@@ -34,27 +34,20 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
 
     def validate(self, data):
-        email = data.get('email')
-        password = data.get('password')
-
+        email = data.get("email")
+        password = data.get("password")
         user = authenticate(email=email, password=password)
 
         if not user:
-            raise serializers.ValidationError("Invalid email or password.")
-
-        if not user.is_active:
-            raise serializers.ValidationError("User account is disabled.")
+            raise serializers.ValidationError("Invalid email or password")
 
         refresh = RefreshToken.for_user(user)
 
         return {
-            'access': str(refresh.access_token),
-            'refresh': str(refresh),
-            'user': {
-                'id': user.id,
-                'email': user.email,
-                'is_athlete': user.is_athlete,
-                'is_admin': user.is_admin,
+            "user": user,
+            "tokens": {
+                "access": str(refresh.access_token),
+                "refresh": str(refresh)
             }
         }
 

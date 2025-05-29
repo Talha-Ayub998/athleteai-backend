@@ -30,14 +30,18 @@ class LoginView(APIView):
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         if serializer.is_valid():
-            user = serializer.validated_data['user']
-            tokens = serializer.validated_data['tokens']
+            user = serializer.validated_data["user"]
+            tokens = serializer.validated_data["tokens"]
             return Response({
-                'access': str(tokens.access_token),
-                'refresh': str(tokens),
-                'user': UserSerializer(user).data
+                "user": {
+                    "id": user.id,
+                    "email": user.email,
+                    "is_admin": user.is_admin,
+                },
+                "access": tokens["access"],
+                "refresh": tokens["refresh"]
             })
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return Response(serializer.errors, status=400)
 
 class LogoutView(APIView):
     permission_classes = [permissions.IsAuthenticated]
