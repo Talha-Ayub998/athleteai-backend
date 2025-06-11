@@ -18,22 +18,30 @@ class S3Service:
         )
         self.bucket_name = os.getenv('AWS_STORAGE_BUCKET_NAME')
 
-    def upload_file(self, file_obj, user_id):
 
-        safe_name = file_obj.name.replace(" ", "_")
-        filename = f"{uuid.uuid4()}_{safe_name}"
-        key = f"user_uploads/{user_id}/{filename}"
+    def upload_files(self, files, user_id):
+        """
+        Uploads multiple files to S3 for the given user_id.
+        """
+        uploaded = []
 
-        try:
-            self.s3_client.upload_fileobj(file_obj, self.bucket_name, key)
-            return {
-                "key": key,
-                "url": f"https://{self.bucket_name}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{key}",
-                "name": safe_name  # include original filename in response
-            }
-        except ClientError as e:
-            print("Upload error:", e)
-            return None
+        for file_obj in files:
+            safe_name = file_obj.name.replace(" ", "_")
+            filename = f"{uuid.uuid4()}_{safe_name}"
+            key = f"user_uploads/{user_id}/{filename}"
+
+            try:
+                self.s3_client.upload_fileobj(file_obj, self.bucket_name, key)
+                uploaded.append({
+                    "key": key,
+                    "url": f"https://{self.bucket_name}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{key}",
+                    "name": safe_name
+                })
+            except ClientError as e:
+                print(f"Upload error ({safe_name}):", e)
+                uploaded.append({"error": f"Failed to upload {safe_name}"})
+
+        return uploaded
 
 
     def list_user_files(self, user_id):
@@ -62,26 +70,32 @@ class S3Service:
 
         return files
     
-    def delete_file(self, key):
+    def delete_files(self, keys):
         """
-        Deletes a file from S3 after checking if it exists.
+        Deletes multiple files from S3.
+        Returns a list of results per key.
         """
-        try:
-            # Check if object exists first
-            self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
-        except self.s3_client.exceptions.ClientError as e:
-            if e.response['Error']['Code'] == "404":
-                return "not_found"
-            else:
-                print("HeadObject error:", e)
-                return False
+        results = []
+        for key in keys:
+            try:
+                self.s3_client.head_object(Bucket=self.bucket_name, Key=key)
+            except self.s3_client.exceptions.ClientError as e:
+                if e.response['Error']['Code'] == "404":
+                    results.append({"key": key, "status": "not_found"})
+                    continue
+                else:
+                    print(f"HeadObject error: {e}")
+                    results.append({"key": key, "status": "error"})
+                    continue
 
-        # If exists, proceed to delete
-        try:
-            self.s3_client.delete_object(Bucket=self.bucket_name, Key=key)
-            return True
-        except Exception as e:
-            print(f"Delete error: {e}")
-            return False
+            try:
+                self.s3_client.delete_object(Bucket=self.bucket_name, Key=key)
+                results.append({"key": key, "status": "deleted"})
+            except Exception as e:
+                print(f"Delete error: {e}")
+                results.append({"key": key, "status": "error"})
+
+        return results
+
 
 
