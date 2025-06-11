@@ -4,6 +4,8 @@ from rest_framework import status, permissions
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.permissions import AllowAny
 from drf_yasg.utils import swagger_auto_schema
+from rest_framework_simplejwt.views import TokenRefreshView
+from drf_yasg import openapi
 from .serializers import LoginSerializer, UserSerializer,  RegisterSerializer, LogoutSerializer
 
 
@@ -58,3 +60,36 @@ class LogoutView(APIView):
             return Response({"detail": "Logged out successfully"}, status=status.HTTP_205_RESET_CONTENT)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CustomTokenRefreshView(TokenRefreshView):
+    """
+    Custom view to refresh an access token using a valid refresh token.
+    """
+
+    @swagger_auto_schema(
+        operation_description="Get a new access token using a valid refresh token.",
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["refresh"],
+            properties={
+                "refresh": openapi.Schema(
+                    type=openapi.TYPE_STRING,
+                    description="Valid refresh token",
+                ),
+            },
+        ),
+        responses={
+            200: openapi.Response(
+                description="New access token",
+                examples={
+                    "application/json": {
+                        "access": "new_access_token"
+                    }
+                }
+            ),
+            401: "Invalid or expired refresh token"
+        }
+    )
+    def post(self, request, *args, **kwargs):
+        return super().post(request, *args, **kwargs)
