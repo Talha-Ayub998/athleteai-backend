@@ -25,3 +25,4 @@ jobs:
           cd ${{ secrets.DEPLOY_PATH }}
           bash deploy.sh
         EOF
+
