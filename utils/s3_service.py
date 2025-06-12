@@ -61,7 +61,11 @@ class S3Service:
             # Generate signed URL
             signed_url = self.s3_client.generate_presigned_url(
                 'get_object',
-                Params={'Bucket': self.bucket_name, 'Key': key},
+                Params={
+                    'Bucket': self.bucket_name,
+                    'Key': key,
+                    'ResponseContentDisposition': f'attachment; filename="{original_name}"'
+                },
                 ExpiresIn=3600  # 1 hour
             )
 
