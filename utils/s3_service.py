@@ -53,11 +53,17 @@ class S3Service:
             key = item["Key"]
             full_filename = key.split("/")[-1]
 
-            # Extract original name from key format: <uuid>_<original_filename>
             if "_" in full_filename:
                 original_name = full_filename.split("_", 1)[1]
             else:
-                original_name = full_filename  # fallback in case UUID wasn't used
+                original_name = full_filename
+
+            # Generate signed URL
+            signed_url = self.s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': self.bucket_name, 'Key': key},
+                ExpiresIn=3600  # 1 hour
+            )
 
             files.append({
                 "key": key,
@@ -65,10 +71,11 @@ class S3Service:
                 "original_name": original_name,
                 "size_bytes": item["Size"],
                 "last_modified": item["LastModified"].isoformat(),
-                "url": f"https://{self.bucket_name}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{key}"
+                "url": signed_url  # Use signed URL
             })
 
         return files
+
     
     def delete_files(self, keys):
         """
