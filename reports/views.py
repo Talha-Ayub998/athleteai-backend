@@ -35,11 +35,15 @@ class UploadExcelFileView(APIView):
             file_hash = get_file_hash(excel_file)
 
             # ✅ Step 3: Check for duplicates
-            if AthleteReport.objects.filter(user=request.user, file_hash=file_hash).exists():
+            duplicate_report = AthleteReport.objects.filter(user=request.user, file_hash=file_hash).first()
+            if duplicate_report:
                 return Response({
                     "status": "duplicate",
-                    "message": "You have already uploaded this file before."
+                    "message": "You have already uploaded this file before.",
+                    "existing_filename": duplicate_report.filename,
+                    "uploaded_at": duplicate_report.created_at if hasattr(duplicate_report, "created_at") else None
                 }, status=400)
+
 
             # ✅ Step 4: Process the file
             excel_file.seek(0)  # reset file pointer
