@@ -10,13 +10,27 @@ from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from reports.models import AthleteReport
 
-import hashlib
-
-
 class UploadExcelFileView(APIView):
     parser_classes = [MultiPartParser]
     permission_classes = [IsAuthenticated]
 
+    @swagger_auto_schema(
+        operation_description="Upload an Excel file (.xlsx) to generate a PDF preview and store it in S3.",
+        manual_parameters=[
+            openapi.Parameter(
+                name="file",
+                in_=openapi.IN_FORM,
+                type=openapi.TYPE_FILE,
+                required=True,
+                description="Excel .xlsx file to be uploaded",
+            ),
+        ],
+        responses={
+            200: openapi.Response(description="Success"),
+            400: "Invalid file or duplicate upload",
+            500: "Internal server error",
+        },
+    )
 
     def post(self, request):
         try:
@@ -59,6 +73,7 @@ class UploadExcelFileView(APIView):
             # ✅ Step 5: Upload to S3
             s3 = S3Service()
             s3_result = s3.upload_files([excel_file], user_id=request.user.id)
+            s3_key_uploaded = s3_result[0]["key"] if s3_result else None
 
             # ✅ Step 6: Save to DB
             file_size_mb = round(excel_file.size / (1024 * 1024), 2)
@@ -68,7 +83,8 @@ class UploadExcelFileView(APIView):
                 filename=filename,
                 pdf_data=result,
                 file_size_mb=file_size_mb,
-                file_hash=file_hash
+                file_hash=file_hash,
+                s3_key=s3_key_uploaded
             )
 
             return Response({
@@ -86,7 +102,13 @@ class ListUserReportsView(APIView):
     API endpoint to list all reports uploaded by the authenticated user from the database.
     """
     permission_classes = [IsAuthenticated]
-
+    @swagger_auto_schema(
+        operation_description="Get list of reports uploaded by the authenticated user.",
+        responses={
+            200: openapi.Response(description="List of reports"),
+            500: "Failed to fetch report list",
+        }
+    )
     def get(self, request):
         try:
             reports = AthleteReport.objects.filter(user=request.user).order_by('-uploaded_at')
@@ -115,25 +137,38 @@ class DeleteUserFileView(APIView):
     permission_classes = [IsAuthenticated]
 
     @swagger_auto_schema(
-        operation_description="Delete multiple files by their keys.",
+        operation_description="Delete multiple uploaded files by their database IDs.",
         request_body=openapi.Schema(
             type=openapi.TYPE_OBJECT,
-            required=["keys"],
+            required=["ids"],
             properties={
-                'keys': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_STRING))
+                'ids': openapi.Schema(type=openapi.TYPE_ARRAY, items=openapi.Items(type=openapi.TYPE_INTEGER))
             },
         ),
-        responses={200: 'File deletion result list'}
-    )
+        responses={200: 'Deletion result list'}
+        )
     def delete(self, request):
-        keys = request.data.get("keys")
-        if not isinstance(keys, list) or not keys:
-            return Response({"error": "Provide a list of file keys."}, status=400)
+        ids = request.data.get("ids")
+        if not isinstance(ids, list) or not ids:
+            return Response({"error": "Provide a list of file IDs."}, status=400)
 
-        # Filter keys to user's own folder
-        keys = [k for k in keys if k.startswith(f"user_uploads/{request.user.id}/")]
+        reports = AthleteReport.objects.filter(id__in=ids, user=request.user)
+
+        if not reports.exists():
+            return Response({"error": "No matching files found."}, status=404)
+
+        # Delete from S3
+        s3_keys = [report.s3_key for report in reports if report.s3_key]
 
         s3 = S3Service()
-        results = s3.delete_files(keys)
+        s3_results = s3.delete_files(s3_keys)
 
-        return Response({"results": results}, status=200)
+        # Delete from DB
+        deleted_count, _ = reports.delete()
+
+        return Response({
+            "status": "success",
+            "deleted_count": deleted_count,
+            "s3_results": s3_results
+        }, status=200)
+

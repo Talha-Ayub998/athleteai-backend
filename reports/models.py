@@ -9,6 +9,7 @@ class AthleteReport(models.Model):
     file_size_mb = models.FloatField(null=True, blank=True)
     file_hash = models.CharField(max_length=64, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    s3_key = models.CharField(max_length=500, blank=True, null=True)
     class Meta:
         unique_together = ("user", "file_hash")  # prevent duplicates per user
 
