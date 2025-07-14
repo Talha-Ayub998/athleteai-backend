@@ -89,8 +89,9 @@ class UploadExcelFileView(APIView):
 
             return Response({
                 "status": "success",
-                "pdf_data": result,
-                "upload_result": s3_result
+                "message": "Data processed successfully",
+                # "pdf_data": result,
+                # "upload_result": s3_result
             }, status=200)
 
         except Exception as e:
@@ -119,6 +120,7 @@ class ListUserReportsView(APIView):
                     "filename": report.filename,
                     "uploaded_at": report.uploaded_at,
                     "file_size_mb": report.file_size_mb,
+                    "pdf_data": report.pdf_data
                     # optionally include additional summary info from pdf_data
                 }
                 for report in reports
