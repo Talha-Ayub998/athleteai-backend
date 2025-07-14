@@ -6,7 +6,6 @@ import datetime
 import json
 import pandas as pd
 import os
-
 # =========================
 # 🔧 Configuration
 # =========================
@@ -21,9 +20,6 @@ GPT_MODELS = {
     'defense_success': 'ft:gpt-3.5-turbo-0125:personal:def-success-bot:94QAWOFR',
     'summary_model': 'ft:gpt-3.5-turbo-0125:personal:summary-data-model:9OAYWgGP'
 }
-
-# File paths
-MOVES_FILE = "moves_df.csv"
 
 # API Keys
 openai.api_key = os.getenv("OPENAI_API_KEY")
@@ -42,6 +38,10 @@ console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
 
+context = {
+    "has_errors": False,
+    "errors": []
+}
 
 # Function to handle translation based on language with custom replacements
 def translate_text(text, target_language):
@@ -645,12 +645,6 @@ def generate_summary(stats_df, results_df, name, language):
 # 🧾 Main PDF Data Builder
 # =========================
 def build_pdf_dict(name, language, stats_df, results_df, moves_df, grouped_df, summary_text, json_data):
-    matches_data = {"Stats": stats_df, "Results": results_df}
-    builtins.athlete_name = name
-    builtins.athlete_language = language
-    builtins.moves_df = moves_df
-    builtins.matches_data = matches_data
-
     submission_summary = calculate_submissions_summary(results_df, moves_df, stats_df)
     match_stats = calculate_match_statistics(stats_df, moves_df, results_df)
 
@@ -699,32 +693,198 @@ def build_pdf_dict(name, language, stats_df, results_df, moves_df, grouped_df, s
         "graph_data": graph_data
     }
 
+def check_missing_sheets(xls):
+    match_sheets = {name.split(" ")[0]: [] for name in xls.sheet_names if "Match-" in name}
+
+    # Populate the dictionary with sheet types for each match
+    for name in xls.sheet_names:
+        if "Match-" in name:
+            match_number = name.split(" ")[0]
+            sheet_type = name.split(" ")[1]
+            match_sheets[match_number].append(sheet_type)
+
+    # Check for missing sheet types
+    for match, types in match_sheets.items():
+        if "Stats" not in types:
+            context["errors"].append(f"{match} does not have Stats Sheet")
+            context["has_errors"] = True
+        if "Result" not in types:
+            context["errors"].append(f"{match} does not have Result Sheet")
+            context["has_errors"] = True
 
 
-ATHLETE_FILE = "Adele_Fornarino.xlsx"
+def validate_move_names(stats_df, moves_df):
+    valid_moves = moves_df['move_name'].tolist()
+
+    # Convert all valid moves to lowercase for case-insensitive comparison
+    valid_moves_lower = [move.lower() for move in valid_moves]
+
+    for index, row in stats_df.iterrows():
+        move_name = row['move_name'].lower()  # Convert to lowercase for comparison
+        if move_name not in valid_moves_lower:
+            # If the move is not valid, add an error message
+            context["errors"].append(f"The move {row['move_name']} is not a valid move, in {row['match']}")
+            context["has_errors"] = True
 
 
-# 1. Load data
-athlete_name, athlete_language, stats_df, results_df, moves_df = load_data(ATHLETE_FILE, MOVES_FILE)
+def validate_and_clean_numeric_fields(stats_df):
+    numeric_fields = ['offense_attempted', 'offense_succeeded', 'defense_attempted', 'defense_succeeded']
+    rows_to_drop = []
 
-# 2. Prepare grouped data
-grouped_df = prepare_grouped_data(stats_df, moves_df)
+    for index, row in stats_df.iterrows():
+        for field in numeric_fields:
+            value = row[field]
+            if not isinstance(value, int):  # Check if value is not an integer
+                try:
+                    # Attempt to convert the field value to an integer
+                    converted_value = int(float(value))
+                    # Check if conversion from float to int changes the value (i.e., had a decimal part)
+                    if float(value) != converted_value:
+                        raise ValueError("Value cannot have a decimal part")
+                except ValueError:
+                    # Log error if conversion fails or value has a decimal part
+                    context["errors"].append(f"Invalid integer value for {field} in move {row['move_name']} in {row['match']}. Value entered: {row[field]}")
+                    context["has_errors"] = True
+                    # Mark row for removal
+                    if index not in rows_to_drop:
+                        rows_to_drop.append(index)
+    
+    # Drop the marked rows from the DataFrame
+    stats_df.drop(rows_to_drop, inplace=True, errors='ignore')
+    # Reset index after dropping rows
+    stats_df.reset_index(drop=True, inplace=True)
 
-# 3. Generate summary from OpenAI
-summary_text, json_data = generate_summary(stats_df, results_df, athlete_name, athlete_language)
 
-# 4. Build PDF data dictionary
-pdf_data = build_pdf_dict(
-    name=athlete_name,
-    language=athlete_language,
-    stats_df=stats_df,
-    results_df=results_df,
-    moves_df=moves_df,
-    grouped_df=grouped_df,
-    summary_text=summary_text,
-    json_data=json_data
-)
+def validate_offense_attempts_vs_succeeds(stats_df):
 
-# Optional: Print a sample
-import pprint
-pprint.pprint(pdf_data)
+    for index, row in stats_df.iterrows():
+        if row['offense_attempted'] < row['offense_succeeded']:
+            context["errors"].append(f"Offense attempts less than offense succeeded for move {row['move_name']} in {row['match']}. Attempts: {row['offense_attempted']}, Succeeded: {row['offense_succeeded']}")
+            context["has_errors"] = True
+
+def validate_defense_attempts_vs_succeeds(stats_df):
+
+    for index, row in stats_df.iterrows():
+        if row['defense_attempted'] < row['defense_succeeded']:
+            context["errors"].append(f"Defense attempts less than defense succeeded for move {row['move_name']} in {row['match']}. Attempts: {row['defense_attempted']}, Succeeded: {row['defense_succeeded']}")
+            context["has_errors"] = True
+
+def validate_submission_rules(stats_df, moves_df):
+    
+    # Filter moves_df for submissions
+    submissions = moves_df[moves_df['categorization'] == 'Submission']['move_name'].unique()
+    
+    # Filter stats_df for submission moves
+    submission_stats = stats_df[stats_df['move_name'].isin(submissions)]
+    
+    # Group by match and move_name for detailed counts
+    grouped = submission_stats.groupby(['match', 'move_name']).agg({
+        'offense_succeeded': 'sum',
+        'defense_attempted': 'sum',
+        'defense_succeeded': 'sum'
+    }).reset_index()
+
+    # Checking each match for the rules
+    for match in grouped['match'].unique():
+        match_data = grouped[grouped['match'] == match]
+
+        # Collect successful offenses and unsuccessful defenses
+        successful_submissions = match_data[match_data['offense_succeeded'] > 0]
+        unsuccessful_defenses = match_data[match_data['defense_attempted'] - match_data['defense_succeeded'] > 0]
+        
+        if successful_submissions['offense_succeeded'].sum() > 1:
+            success_details = ', '.join([f"{row['move_name']} ({row['offense_succeeded']} times)" for _, row in successful_submissions.iterrows()])
+            context["errors"].append(f"Match {match} has multiple successful submission moves: {success_details}.")
+            context["has_errors"] = True
+        
+        if (unsuccessful_defenses['defense_attempted'] - unsuccessful_defenses['defense_succeeded']).sum() > 1:
+            defense_details = ', '.join([f"{row['move_name']} ({row['defense_attempted'] - row['defense_succeeded']} times)" for _, row in unsuccessful_defenses.iterrows()])
+            context["errors"].append(f"Match {match} has multiple unsuccessful submission defenses: {defense_details}.")
+            context["has_errors"] = True
+
+        if successful_submissions['offense_succeeded'].sum() > 0 and (unsuccessful_defenses['defense_attempted'] - unsuccessful_defenses['defense_succeeded']).sum() > 0:
+            context["errors"].append(f"Match {match} contains both successful submission offenses and unsuccessful defense attempts against submission moves.")
+            context["has_errors"] = True
+
+def validate_match_outcomes(stats_df, moves_df, results_df):
+    
+    # Identify submission moves from the moves dataframe
+    submission_moves = moves_df[moves_df['categorization'] == 'Submission']['move_name'].unique()
+    
+    # Filter stats for submission moves and successful submissions
+    successful_submissions = stats_df[(stats_df['move_name'].isin(submission_moves)) & (stats_df['offense_succeeded'] > 0)]
+    
+    # Validate successful submissions lead to a Win
+    for _, row in successful_submissions.iterrows():
+        match_result = results_df[results_df['match'] == row['match']]['Result'].iloc[0]
+        if match_result != 'Win':
+            context["errors"].append(f"Match {row['match']} has a successful submission but did not result in a Win.")
+            context["has_errors"] = True
+    
+    # Filter stats for submission moves and unsuccessful defenses
+    unsuccessful_defenses = stats_df[(stats_df['move_name'].isin(submission_moves)) & (stats_df['defense_attempted'] > 0) & (stats_df['defense_attempted'] > stats_df['defense_succeeded'])]
+    
+    # Validate unsuccessful defenses lead to a Loss
+    for _, row in unsuccessful_defenses.iterrows():
+        match_result = results_df[results_df['match'] == row['match']]['Result'].iloc[0]
+        if match_result != 'Lost':
+            context["errors"].append(f"Match {row['match']} has an unsuccessful defense submission but did not result in a Loss.")
+            context["has_errors"] = True
+
+
+def process_excel_file(ATHLETE_FILE):
+    # 🔧 Path to moves file (standard reference file)
+    MOVES_FILE = "moves_df.csv"
+
+    # 📥 Load Excel workbook
+    xls = pd.ExcelFile(ATHLETE_FILE)
+
+    # 📊 Step 1: Load data from Excel and CSV
+    athlete_name, athlete_language, stats_df, results_df, moves_df = load_data(ATHLETE_FILE, MOVES_FILE)
+    matches_data = {"Stats": stats_df, "Results": results_df}
+
+    # ✅ Step 2: Run all validation checks
+    check_missing_sheets(xls)
+    validate_move_names(matches_data['Stats'], moves_df)
+    validate_and_clean_numeric_fields(matches_data['Stats'])
+    validate_defense_attempts_vs_succeeds(matches_data['Stats'])
+    validate_offense_attempts_vs_succeeds(matches_data['Stats'])
+    validate_submission_rules(matches_data['Stats'], moves_df)
+    validate_match_outcomes(matches_data['Stats'], moves_df, matches_data['Results'])
+
+    # ⚠️ Step 3: Handle validation errors, if any
+    if context["has_errors"]:
+        if athlete_name.endswith('s'):
+            title = f"{athlete_name}' Jiu Jitsu Report Failure. Input Data has {len(context['errors'])} errors."
+        else:
+            title = f"{athlete_name}'s Jiu Jitsu Report Failure. Input Data has {len(context['errors'])} errors."
+
+        body = title + "\n\n"
+        body += "Hi. Requested Jiu Jitsu Report has failed to generate. Input Data has the following errors:\n\n"
+        body += "\n".join(f"{index + 1}. {error}" for index, error in enumerate(context["errors"]))
+        return body, False
+
+    # 📊 Step 4: Group and prepare data for analysis
+    grouped_df = prepare_grouped_data(stats_df, moves_df)
+
+    # 🧠 Step 5: Generate AI summary (translated & gender-neutral)
+    summary_text, json_data = generate_summary(stats_df, results_df, athlete_name, athlete_language)
+
+    # 🧾 Step 6: Build final PDF data dictionary
+    pdf_data = build_pdf_dict(
+        name=athlete_name,
+        language=athlete_language,
+        stats_df=stats_df,
+        results_df=results_df,
+        moves_df=moves_df,
+        grouped_df=grouped_df,
+        summary_text=summary_text,
+        json_data=json_data
+    )
+
+    # ✅ Return prepared PDF data and success status
+    return pdf_data, True
+
+
+# 🔁 Execute main function with default athlete file
+# main(ATHLETE_FILE="Adele_Fornarino.xlsx")
