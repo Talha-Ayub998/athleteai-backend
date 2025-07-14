@@ -574,25 +574,30 @@ def analyze_most_attempted_defense_and_submission(grouped_df):
 # =========================
 # 📊 Data Preparation
 # =========================
-def load_data(athlete_file, moves_file):
-    xls = pd.ExcelFile(athlete_file)
-    athlete_df = pd.read_excel(xls, sheet_name="Athlete")
+def load_data(moves_file, xls, athlete_sheet):
+
+    athlete_df = pd.read_excel(xls, sheet_name=athlete_sheet)
     athlete_name = athlete_df.at[0, 'Name']
     athlete_language = athlete_df.at[0, 'Language'].lower()
 
+    # Collect Stats sheets
     stats_df = pd.concat([
         pd.read_excel(xls, sheet_name=s).assign(match=s.split(" ")[0])
         for s in xls.sheet_names if "Match-" in s and "Stats" in s
     ])
+    
+    # Collect Result sheets
     results_df = pd.concat([
         pd.read_excel(xls, sheet_name=s).assign(match=s.split(" ")[0])
         for s in xls.sheet_names if "Match-" in s and "Result" in s
     ])
 
+    # Load and clean moves data
     moves_df = pd.read_csv(moves_file)
     moves_df.rename(columns={'Categorization': 'categorization', 'Points': 'points'}, inplace=True)
 
-    return athlete_name, athlete_language, stats_df, results_df, moves_df
+    return athlete_name, athlete_language, stats_df, results_df, moves_df, xls
+
 
 
 def prepare_grouped_data(stats_df, moves_df):
@@ -838,9 +843,14 @@ def process_excel_file(ATHLETE_FILE):
 
     # 📥 Load Excel workbook
     xls = pd.ExcelFile(ATHLETE_FILE)
+    
+    # Validate and locate the Athlete sheet
+    athlete_sheet = next((s for s in xls.sheet_names if "athlete" in s.lower()), None)
+    if not athlete_sheet:
+        return "No sheet named 'Athlete' found in the Excel file.", False
 
     # 📊 Step 1: Load data from Excel and CSV
-    athlete_name, athlete_language, stats_df, results_df, moves_df = load_data(ATHLETE_FILE, MOVES_FILE)
+    athlete_name, athlete_language, stats_df, results_df, moves_df = load_data(MOVES_FILE, xls, athlete_sheet)
     matches_data = {"Stats": stats_df, "Results": results_df}
 
     # ✅ Step 2: Run all validation checks
@@ -887,4 +897,4 @@ def process_excel_file(ATHLETE_FILE):
 
 
 # 🔁 Execute main function with default athlete file
-# main(ATHLETE_FILE="Adele_Fornarino.xlsx")
+# main(ATHLETE_FILE="file_example_XLSX_10.xlsx")
