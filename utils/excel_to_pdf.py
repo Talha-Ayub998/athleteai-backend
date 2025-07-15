@@ -596,7 +596,7 @@ def load_data(moves_file, xls, athlete_sheet):
     moves_df = pd.read_csv(moves_file)
     moves_df.rename(columns={'Categorization': 'categorization', 'Points': 'points'}, inplace=True)
 
-    return athlete_name, athlete_language, stats_df, results_df, moves_df, xls
+    return athlete_name, athlete_language, stats_df, results_df, moves_df
 
 
 
