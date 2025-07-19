@@ -130,40 +130,26 @@ class ListUserReportsView(APIView):
         try:
             user = request.user
             
-            # ## WILL USE IN FINAL ###
-            # # ❌ Condition 1: Superusers are blocked from API
-            # if user.role == 'superuser' or user.is_superuser:
-            #     return Response(
-            #         {"error": "Superusers are not allowed to access this API."},
-            #         status=status.HTTP_403_FORBIDDEN
-            #     )
+            ## WILL USE IN FINAL ###
+            # ❌ Condition 1: Superusers are blocked from API
+            if user.role == 'superuser' or user.is_superuser:
+                return Response(
+                    {"error": "Superusers are not allowed to access this API."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
 
-            # # ✅ Condition 2: Admin — see athlete reports + own reports, but not other admins
-            # elif user.role == 'admin':
-            #     reports = AthleteReport.objects.filter(
-            #         Q(user__role='athlete') | Q(user=user)
-            #     ).exclude(
-            #         ~Q(user=user) & Q(user__role='admin')
-            #     )
-
-            # # ✅ Condition 3: Athlete — only see their own reports
-            # else:  # user.role == 'athlete'
-            #     reports = AthleteReport.objects.filter(user=user)
-            # ## WILL USE IN FINAL ###
-
-            ### WILL REMOVE IN FINAL ###
-            # ✅ Admin — see athlete reports + own reports, but not other admins
-            if user.role != 'athlete':
+            # ✅ Condition 2: Admin — see athlete reports + own reports, but not other admins
+            elif user.role == 'admin':
                 reports = AthleteReport.objects.filter(
                     Q(user__role='athlete') | Q(user=user)
                 ).exclude(
                     ~Q(user=user) & Q(user__role='admin')
                 )
-            # ✅ Athletes can see their own reports
-            else:
-                reports = AthleteReport.objects.filter(user=user)
-            ### WILL REMOVE IN FINAL ###
 
+            # ✅ Condition 3: Athlete — only see their own reports
+            else:  # user.role == 'athlete'
+                reports = AthleteReport.objects.filter(user=user)
+            ## WILL USE IN FINAL ###
             reports = reports.order_by('-uploaded_at')
 
             data = [
@@ -210,8 +196,8 @@ class DeleteUserFileView(APIView):
         user = request.user
 
         # ❌ Block superusers
-        # if user.role == 'superuser' or user.is_superuser:
-        #     return Response({"error": "Superusers are not allowed to access this API."}, status=403)
+        if user.role == 'superuser' or user.is_superuser:
+            return Response({"error": "Superusers are not allowed to access this API."}, status=403)
 
         # ✅ Allow admin or athlete to delete their own reports only
         reports = AthleteReport.objects.filter(id__in=ids, user=user)
