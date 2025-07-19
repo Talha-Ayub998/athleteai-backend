@@ -6,8 +6,15 @@ from rest_framework.permissions import AllowAny
 from drf_yasg.utils import swagger_auto_schema
 from rest_framework_simplejwt.views import TokenRefreshView
 from drf_yasg import openapi
-from .serializers import LoginSerializer, UserSerializer,  RegisterSerializer, LogoutSerializer
+from .serializers import LoginSerializer, UserSerializer, \
+                        RegisterSerializer, LogoutSerializer
+import stripe
+from django.views import View
+from django.http import JsonResponse
+import os
 
+
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 class RegisterView(APIView):
     permission_classes = [AllowAny]
@@ -38,7 +45,7 @@ class LoginView(APIView):
                 "user": {
                     "id": user.id,
                     "email": user.email,
-                    "is_admin": user.is_admin,
+                    "role": user.role,
                 },
                 "access": tokens["access"],
                 "refresh": tokens["refresh"]
@@ -93,3 +100,28 @@ class CustomTokenRefreshView(TokenRefreshView):
     )
     def post(self, request, *args, **kwargs):
         return super().post(request, *args, **kwargs)
+
+
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
+
+@method_decorator(csrf_exempt, name='dispatch')
+class CreateCheckoutSessionView(View):
+    def post(self, request):
+        session = stripe.checkout.Session.create(
+            payment_method_types=['card'],
+            line_items=[{
+                'price_data': {
+                    'currency': 'usd',
+                    'unit_amount': 2000,
+                    'product_data': {
+                        'name': 'Signup Payment',
+                    },
+                },
+                'quantity': 1,
+            }],
+            mode='payment',
+            success_url='https://54.215.71.202.nip.io/api/users/success/?session_id={CHECKOUT_SESSION_ID}',
+            cancel_url='https://54.215.71.202.nip.io/api/users/cancel/',
+        )
+        return JsonResponse({'checkout_url': session.url})

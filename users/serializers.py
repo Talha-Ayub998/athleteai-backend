@@ -21,7 +21,7 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = CustomUser
-        fields = ['username', 'email', 'password', 'password2', 'is_athlete', 'is_admin']
+        fields = ['username', 'email', 'password', 'password2']  # ⛔ removed is_athlete and is_admin
 
     def validate(self, attrs):
         if attrs['password'] != attrs['password2']:
@@ -30,14 +30,9 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data.pop('password2')
-        user = CustomUser.objects.create_user(
-            username=validated_data['username'],
-            email=validated_data['email'],
-            password=validated_data['password'],
-            is_athlete=validated_data.get('is_athlete', True),
-            is_admin=validated_data.get('is_admin', False)
-        )
-        return user
+        validated_data['role'] = 'athlete'  # ✅ force role to athlete
+        return CustomUser.objects.create_user(**validated_data)
+
 
 
 class LoginSerializer(serializers.Serializer):
@@ -65,7 +60,7 @@ class LoginSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomUser
-        fields = ['id', 'username', 'email', 'is_athlete', 'is_admin']
+        fields = ['id', 'username', 'email', 'role']
 
 class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField(help_text="Refresh token to blacklist")
