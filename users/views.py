@@ -51,9 +51,6 @@ class RegisterView(APIView):
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-
-from athleteai.permissions import IsAdminOnly
-
 class ListUsersView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission, IsAdminOnly]
 
@@ -89,6 +86,9 @@ class LoginView(APIView):
         if serializer.is_valid():
             user = serializer.validated_data["user"]
             tokens = serializer.validated_data["tokens"]
+
+            if user.is_superuser or user.role == 'superuser':
+                return Response({"error": "You do not have permission to perform this action."}, status=403)
 
             # ✅ Manually update last_login timestamp
             user.last_login = now()
