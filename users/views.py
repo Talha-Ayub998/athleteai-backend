@@ -1,23 +1,43 @@
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status, permissions
-from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework.permissions import AllowAny
-from drf_yasg.utils import swagger_auto_schema
-from rest_framework_simplejwt.views import TokenRefreshView
-from drf_yasg import openapi
-from .serializers import LoginSerializer, UserSerializer, \
-                        RegisterSerializer, LogoutSerializer
-import stripe
-from django.views import View
-from django.http import JsonResponse
+# Standard Library
 import os
 
+# Django
+from django.views import View
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
+from django.utils.timezone import now
 
+# Django REST Framework
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenRefreshView
+
+# Swagger / drf-yasg
+from drf_yasg.utils import swagger_auto_schema
+from drf_yasg import openapi
+
+# App-specific imports
+from users.models import CustomUser
+from .serializers import (
+    RegisterSerializer,
+    LoginSerializer,
+    LogoutSerializer,
+    UserSerializer,
+    UserListSerializer,
+)
+
+from athleteai.permissions import BlockSuperUserPermission, IsAdminOnly
+
+# Stripe configuration
+import stripe
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 class RegisterView(APIView):
-    permission_classes = [AllowAny]
+    permission_classes = [AllowAny, BlockSuperUserPermission]
     @swagger_auto_schema(request_body=RegisterSerializer)
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
@@ -32,8 +52,36 @@ class RegisterView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+from athleteai.permissions import IsAdminOnly
+
+class ListUsersView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission, IsAdminOnly]
+
+    @swagger_auto_schema(
+        operation_description="Admins can view all athletes. Superusers and athletes are not allowed.",
+        responses={
+            200: openapi.Response(description="List of users"),
+            403: "Forbidden",
+            500: "Failed to fetch user list",
+        }
+    )
+    def get(self, request):
+        try:
+            # ✅ This is now guaranteed to be an admin
+            users = CustomUser.objects.filter(role='athlete').order_by('-date_joined')
+            serialized = UserListSerializer(users, many=True)
+            return Response(serialized.data, status=200)
+
+        except Exception as e:
+            print(f"User list error: {e}")
+            return Response(
+                {"error": "Failed to fetch user list."},
+                status=500
+            )
+
+
 class LoginView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [AllowAny, BlockSuperUserPermission]
 
     @swagger_auto_schema(request_body=LoginSerializer)
     def post(self, request):
@@ -41,11 +89,17 @@ class LoginView(APIView):
         if serializer.is_valid():
             user = serializer.validated_data["user"]
             tokens = serializer.validated_data["tokens"]
+
+            # ✅ Manually update last_login timestamp
+            user.last_login = now()
+            user.save(update_fields=["last_login"])
+
             return Response({
                 "user": {
                     "id": user.id,
                     "email": user.email,
                     "role": user.role,
+                    "last_login": user.last_login
                 },
                 "access": tokens["access"],
                 "refresh": tokens["refresh"]
@@ -53,7 +107,7 @@ class LoginView(APIView):
         return Response(serializer.errors, status=400)
 
 class LogoutView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
     @swagger_auto_schema(request_body=LogoutSerializer)
     def post(self, request):
@@ -73,6 +127,7 @@ class CustomTokenRefreshView(TokenRefreshView):
     """
     Custom view to refresh an access token using a valid refresh token.
     """
+    permission_classes = [BlockSuperUserPermission]
 
     @swagger_auto_schema(
         operation_description="Get a new access token using a valid refresh token.",
@@ -102,8 +157,6 @@ class CustomTokenRefreshView(TokenRefreshView):
         return super().post(request, *args, **kwargs)
 
 
-from django.views.decorators.csrf import csrf_exempt
-from django.utils.decorators import method_decorator
 
 @method_decorator(csrf_exempt, name='dispatch')
 class CreateCheckoutSessionView(View):

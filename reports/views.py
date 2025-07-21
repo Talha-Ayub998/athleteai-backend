@@ -11,11 +11,12 @@ from drf_yasg import openapi
 from reports.models import AthleteReport
 from django.db.models import Q
 from users.models import CustomUser
+from athleteai.permissions import BlockSuperUserPermission
 
 
 class UploadExcelFileView(APIView):
     parser_classes = [MultiPartParser]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
     @swagger_auto_schema(
         operation_description="Upload an Excel file. Admins can upload on behalf of users by providing `user_id`.",
@@ -44,9 +45,6 @@ class UploadExcelFileView(APIView):
     )
     def post(self, request):
         try:
-            # Step 0: Block superusers
-            if request.user.role == 'superuser' or request.user.is_superuser:
-                return Response({"error": "Superusers are not allowed to upload files via API."}, status=403)
 
             # Step 1: Parse uploaded file
             files = request.FILES.getlist("file")
@@ -116,7 +114,7 @@ class UploadExcelFileView(APIView):
 
 
 class ListUserReportsView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
     @swagger_auto_schema(
         operation_description="Admins can view all athlete reports. Athletes can view their own reports. Superusers are not allowed.",
@@ -129,27 +127,19 @@ class ListUserReportsView(APIView):
     def get(self, request):
         try:
             user = request.user
-            
-            ## WILL USE IN FINAL ###
-            # ❌ Condition 1: Superusers are blocked from API
-            if user.role == 'superuser' or user.is_superuser:
-                return Response(
-                    {"error": "Superusers are not allowed to access this API."},
-                    status=status.HTTP_403_FORBIDDEN
-                )
 
-            # ✅ Condition 2: Admin — see athlete reports + own reports, but not other admins
-            elif user.role == 'admin':
+            # ✅ Condition 1: Admin — see athlete reports + own reports, but not other admins
+            if user.role == 'admin':
                 reports = AthleteReport.objects.filter(
                     Q(user__role='athlete') | Q(user=user)
                 ).exclude(
                     ~Q(user=user) & Q(user__role='admin')
                 )
 
-            # ✅ Condition 3: Athlete — only see their own reports
+            # ✅ Condition 2: Athlete — only see their own reports
             else:  # user.role == 'athlete'
                 reports = AthleteReport.objects.filter(user=user)
-            ## WILL USE IN FINAL ###
+
             reports = reports.order_by('-uploaded_at')
 
             data = [
@@ -159,7 +149,8 @@ class ListUserReportsView(APIView):
                     "uploaded_at": report.uploaded_at,
                     "file_size_mb": report.file_size_mb,
                     "pdf_data": report.pdf_data,
-                    "uploaded_by": report.user.email
+                    "uploaded_by": report.user.email,
+                    "user_id": report.user.id
                 }
                 for report in reports
             ]
@@ -175,7 +166,7 @@ class ListUserReportsView(APIView):
 
 
 class DeleteUserFileView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
     @swagger_auto_schema(
         operation_description="Authenticated users (admins or athletes) can delete their own uploaded reports. Superusers are not allowed.",
@@ -194,10 +185,6 @@ class DeleteUserFileView(APIView):
             return Response({"error": "Provide a list of file IDs."}, status=400)
 
         user = request.user
-
-        # ❌ Block superusers
-        if user.role == 'superuser' or user.is_superuser:
-            return Response({"error": "Superusers are not allowed to access this API."}, status=403)
 
         # ✅ Allow admin or athlete to delete their own reports only
         reports = AthleteReport.objects.filter(id__in=ids, user=user)
