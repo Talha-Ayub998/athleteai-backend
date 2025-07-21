@@ -100,7 +100,8 @@ class LoginView(APIView):
                     "email": user.email,
                     "username": user.username,
                     "role": user.role,
-                    "last_login": user.last_login
+                    "last_login": user.last_login,
+                    "date_joined": user.date_joined
                 },
                 "access": tokens["access"],
                 "refresh": tokens["refresh"]
