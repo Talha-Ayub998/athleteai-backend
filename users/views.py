@@ -98,6 +98,7 @@ class LoginView(APIView):
                 "user": {
                     "id": user.id,
                     "email": user.email,
+                    "username": user.username,
                     "role": user.role,
                     "last_login": user.last_login
                 },
