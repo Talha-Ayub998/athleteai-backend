@@ -124,6 +124,14 @@ class LogoutView(APIView):
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
+class CurrentUserView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    def get(self, request):
+        user = request.user
+        serializer = UserSerializer(user)
+        return Response(serializer.data, status=200)
+
 class CustomTokenRefreshView(TokenRefreshView):
     """
     Custom view to refresh an access token using a valid refresh token.
