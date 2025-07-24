@@ -572,7 +572,7 @@ def analyze_most_attempted_defense_and_submission(grouped_df):
 # =========================
 # 📊 Data Preparation
 # =========================
-def load_data(moves_file, xls, athlete_sheet):
+def load_data(moves_df, xls, athlete_sheet):
 
     athlete_df = pd.read_excel(xls, sheet_name=athlete_sheet)
     athlete_name = athlete_df.at[0, 'Name']
@@ -591,7 +591,6 @@ def load_data(moves_file, xls, athlete_sheet):
     ])
 
     # Load and clean moves data
-    moves_df = pd.read_csv(moves_file)
     moves_df.rename(columns={'Categorization': 'categorization', 'Points': 'points'}, inplace=True)
 
     return athlete_name, athlete_language, stats_df, results_df, moves_df
@@ -860,7 +859,7 @@ def process_excel_file(ATHLETE_FILE):
         return "No sheet named 'Athlete' found in the Excel file.", False
 
     # 📊 Step 1: Load data from Excel and CSV
-    athlete_name, athlete_language, stats_df, results_df, moves_df = load_data(MOVES_FILE, xls, athlete_sheet)
+    athlete_name, athlete_language, stats_df, results_df, moves_df = load_data(moves_df, xls, athlete_sheet)
     matches_data = {"Stats": stats_df, "Results": results_df}
 
     # ✅ Step 2: Run all validation checks
