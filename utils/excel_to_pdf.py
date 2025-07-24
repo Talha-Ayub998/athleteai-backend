@@ -38,11 +38,6 @@ console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
 
-context = {
-    "has_errors": False,
-    "errors": []
-}
-
 # Function to handle translation based on language with custom replacements
 def translate_text(text, target_language):
     # Check if the target language is Portuguese and perform translation
@@ -698,7 +693,7 @@ def build_pdf_dict(name, language, stats_df, results_df, moves_df, grouped_df, s
         "graph_data": graph_data
     }
 
-def check_missing_sheets(xls):
+def check_missing_sheets(xls, context):
     match_sheets = {name.split(" ")[0]: [] for name in xls.sheet_names if "Match-" in name}
 
     # Populate the dictionary with sheet types for each match
@@ -718,7 +713,7 @@ def check_missing_sheets(xls):
             context["has_errors"] = True
 
 
-def validate_move_names(stats_df, moves_df):
+def validate_move_names(stats_df, moves_df, context):
     valid_moves = moves_df['move_name'].tolist()
 
     # Convert all valid moves to lowercase for case-insensitive comparison
@@ -732,7 +727,7 @@ def validate_move_names(stats_df, moves_df):
             context["has_errors"] = True
 
 
-def validate_and_clean_numeric_fields(stats_df):
+def validate_and_clean_numeric_fields(stats_df, context):
     numeric_fields = ['offense_attempted', 'offense_succeeded', 'defense_attempted', 'defense_succeeded']
     rows_to_drop = []
 
@@ -760,21 +755,21 @@ def validate_and_clean_numeric_fields(stats_df):
     stats_df.reset_index(drop=True, inplace=True)
 
 
-def validate_offense_attempts_vs_succeeds(stats_df):
+def validate_offense_attempts_vs_succeeds(stats_df, context):
 
     for index, row in stats_df.iterrows():
         if row['offense_attempted'] < row['offense_succeeded']:
             context["errors"].append(f"Offense attempts less than offense succeeded for move {row['move_name']} in {row['match']}. Attempts: {row['offense_attempted']}, Succeeded: {row['offense_succeeded']}")
             context["has_errors"] = True
 
-def validate_defense_attempts_vs_succeeds(stats_df):
+def validate_defense_attempts_vs_succeeds(stats_df, context):
 
     for index, row in stats_df.iterrows():
         if row['defense_attempted'] < row['defense_succeeded']:
             context["errors"].append(f"Defense attempts less than defense succeeded for move {row['move_name']} in {row['match']}. Attempts: {row['defense_attempted']}, Succeeded: {row['defense_succeeded']}")
             context["has_errors"] = True
 
-def validate_submission_rules(stats_df, moves_df):
+def validate_submission_rules(stats_df, moves_df, context):
     
     # Filter moves_df for submissions
     submissions = moves_df[moves_df['categorization'] == 'Submission']['move_name'].unique()
@@ -811,7 +806,7 @@ def validate_submission_rules(stats_df, moves_df):
             context["errors"].append(f"Match {match} contains both successful submission offenses and unsuccessful defense attempts against submission moves.")
             context["has_errors"] = True
 
-def validate_match_outcomes(stats_df, moves_df, results_df):
+def validate_match_outcomes(stats_df, moves_df, results_df, context):
     
     # Identify submission moves from the moves dataframe
     submission_moves = moves_df[moves_df['categorization'] == 'Submission']['move_name'].unique()
@@ -838,6 +833,8 @@ def validate_match_outcomes(stats_df, moves_df, results_df):
 
 
 def process_excel_file(ATHLETE_FILE):
+    context = {"has_errors": False, "errors": []}
+
     # 🔧 Path to moves file (standard reference file)
     MOVES_FILE = "moves_df.csv"
 
@@ -854,13 +851,13 @@ def process_excel_file(ATHLETE_FILE):
     matches_data = {"Stats": stats_df, "Results": results_df}
 
     # ✅ Step 2: Run all validation checks
-    check_missing_sheets(xls)
-    validate_move_names(matches_data['Stats'], moves_df)
-    validate_and_clean_numeric_fields(matches_data['Stats'])
-    validate_defense_attempts_vs_succeeds(matches_data['Stats'])
-    validate_offense_attempts_vs_succeeds(matches_data['Stats'])
-    validate_submission_rules(matches_data['Stats'], moves_df)
-    validate_match_outcomes(matches_data['Stats'], moves_df, matches_data['Results'])
+    check_missing_sheets(xls, context)
+    validate_move_names(matches_data['Stats'], moves_df, context)
+    validate_and_clean_numeric_fields(matches_data['Stats'], context)
+    validate_defense_attempts_vs_succeeds(matches_data['Stats'], context)
+    validate_offense_attempts_vs_succeeds(matches_data['Stats'], context)
+    validate_submission_rules(matches_data['Stats'], moves_df, context)
+    validate_match_outcomes(matches_data['Stats'], moves_df, matches_data['Results'], context)
 
     # ⚠️ Step 3: Handle validation errors, if any
     if context["has_errors"]:
