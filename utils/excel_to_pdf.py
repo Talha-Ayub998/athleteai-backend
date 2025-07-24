@@ -6,6 +6,9 @@ import datetime
 import json
 import pandas as pd
 import os
+import boto3
+import pandas as pd
+from io import StringIO
 # =========================
 # 🔧 Configuration
 # =========================
@@ -832,11 +835,21 @@ def validate_match_outcomes(stats_df, moves_df, results_df, context):
             context["has_errors"] = True
 
 
+def read_csv_from_s3(bucket_name, key):
+    s3 = boto3.client('s3')
+    response = s3.get_object(Bucket=bucket_name, Key=key)
+    content = response['Body'].read().decode('utf-8')
+    return pd.read_csv(StringIO(content))
+
+
 def process_excel_file(ATHLETE_FILE):
     context = {"has_errors": False, "errors": []}
 
     # 🔧 Path to moves file (standard reference file)
-    MOVES_FILE = "moves_df.csv"
+    bucket_name = "jiu-jitsu-reporting"
+    key = "lookups/moves_df.csv"
+    moves_df = read_csv_from_s3(bucket_name, key)
+
 
     # 📥 Load Excel workbook
     xls = pd.ExcelFile(ATHLETE_FILE)
