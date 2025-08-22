@@ -31,6 +31,8 @@ from .serializers import (
     UserListSerializer,
 )
 from .stripe_prices import STRIPE_PRICES
+from .stripe_utils import get_price_id
+
 
 import json
 from athleteai.permissions import BlockSuperUserPermission, IsAdminOnly
@@ -218,14 +220,15 @@ class CreateCheckoutSessionView(APIView):
         # Subscription flow
         if flow_type == "subscription":
             if plan not in ("essentials", "precision"):
-                return Response({"error": "Invalid plan"}, status=status.HTTP_400_BAD_REQUEST)
+                return JsonResponse({"error": "Invalid plan"}, status=400)
             if interval not in ("month", "year"):
-                return Response({"error": "Missing or invalid interval"}, status=status.HTTP_400_BAD_REQUEST)
+                return JsonResponse({"error": "Missing or invalid interval"}, status=400)
 
-            key = f"{plan}_{interval}"
-            price_id = STRIPE_PRICES.get(key)
-            if not price_id:
-                return Response({"error": "Invalid plan/interval"}, status=status.HTTP_400_BAD_REQUEST)
+            key = f"{plan}_{interval}"  # e.g. "essentials_month"
+            try:
+                price_id = get_price_id(key)   # 🔑 dynamic lookup
+            except ValueError as e:
+                return JsonResponse({"error": str(e)}, status=400)
 
             try:
                 session = stripe.checkout.Session.create(
@@ -244,9 +247,10 @@ class CreateCheckoutSessionView(APIView):
 
         # One-time PDF flow
         if flow_type == "one_time" and plan == "pdf_report":
-            price_id = STRIPE_PRICES.get("pdf_report")
-            if not price_id:
-                return Response({"error": "Price not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            try:
+                price_id = get_price_id("pdf_report")
+            except ValueError as e:
+                return JsonResponse({"error": str(e)}, status=400)
 
             try:
                 session = stripe.checkout.Session.create(
