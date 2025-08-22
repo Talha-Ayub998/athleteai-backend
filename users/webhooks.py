@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import json
 import logging
 from datetime import datetime
 
@@ -15,35 +14,13 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from users.models import CustomUser, Subscription, ReportPurchase
-from .stripe_prices import STRIPE_PRICES
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 logger = logging.getLogger(__name__)
 
-# Build reverse lookup once (price_id -> key)
-REVERSE_PRICE = {v: k for k, v in STRIPE_PRICES.items()}
-
-
-def _plan_interval_from_price(price_id: str):
-    """
-    Map a subscription price_id to (plan, interval).
-    Returns (None, None) if the price_id isn't a subscription price (e.g., one-time).
-    """
-    key = REVERSE_PRICE.get(price_id)
-    if not key or key == "pdf_report":
-        return (None, None)
-    try:
-        plan, interval = key.split("_", 1)  # e.g. "essentials_month" -> ("essentials", "month")
-        return (plan, interval)
-    except ValueError:
-        return (None, None)
-
 
 def _find_user_for_session(session_obj: dict) -> CustomUser | None:
-    """
-    Resolve the app user for a Checkout Session.
-    Prefers metadata.user_id (set when creating the session), falls back to email.
-    """
+    """Resolve app user for a Checkout Session via metadata.user_id or email."""
     meta = session_obj.get("metadata") or {}
     user_id = meta.get("user_id")
     if user_id:
@@ -62,6 +39,30 @@ def _find_user_for_session(session_obj: dict) -> CustomUser | None:
         except CustomUser.DoesNotExist:
             return None
     return None
+
+
+def _plan_interval_from_subscription(stripe_sub: dict, session_meta: dict | None = None):
+    """
+    Derive (plan, interval) primarily from the subscription item's price.lookup_key.
+    Fallback to session metadata (plan/interval) if lookup_key is absent.
+    """
+    items = (stripe_sub.get("items") or {}).get("data") or []
+    price = items[0].get("price") if items else {}
+    lookup_key = price.get("lookup_key")
+
+    plan = interval = None
+    if lookup_key and "_" in lookup_key:
+        try:
+            plan, interval = lookup_key.split("_", 1)  # e.g., "essentials_month"
+        except ValueError:
+            plan = interval = None
+
+    # Fallback to session metadata if needed
+    if (not plan or not interval) and session_meta:
+        plan = plan or session_meta.get("plan")
+        interval = interval or session_meta.get("interval")
+
+    return plan, interval
 
 
 @csrf_exempt
@@ -83,16 +84,14 @@ def stripe_webhook(request):
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
     except ValueError:
-        # Invalid payload
         return HttpResponse(status=400)
     except stripe.error.SignatureVerificationError:
-        # Invalid signature
         return HttpResponse(status=400)
 
     etype = event.get("type")
     data = event.get("data", {}).get("object", {})
 
-    # 1) Checkout completed (covers both subscription and one-time)
+    # 1) Checkout completed (subscription or one-time)
     if etype == "checkout.session.completed":
         session = data
         mode = session.get("mode")
@@ -100,13 +99,13 @@ def stripe_webhook(request):
 
         if user is None:
             logger.warning("checkout.session.completed: unable to match user")
-            return HttpResponse(status=200)  # ack so Stripe stops retries
+            return HttpResponse(status=200)
 
         customer_id = session.get("customer")
+        session_meta = session.get("metadata") or {}
 
         with transaction.atomic():
             sub_rec, _ = Subscription.objects.get_or_create(user=user)
-            # Store/refresh Stripe customer id
             if customer_id and sub_rec.stripe_customer_id != customer_id:
                 sub_rec.stripe_customer_id = customer_id
                 sub_rec.save(update_fields=["stripe_customer_id"])
@@ -117,10 +116,9 @@ def stripe_webhook(request):
                     logger.error("checkout.session.completed missing subscription id")
                     return HttpResponse(status=200)
 
+                # Expand price so we get lookup_key
                 stripe_sub = stripe.Subscription.retrieve(sub_id, expand=["items.data.price"])
-                items = stripe_sub.get("items", {}).get("data", [])
-                price_id = items[0]["price"]["id"] if items else None
-                plan, interval = _plan_interval_from_price(price_id) if price_id else (None, None)
+                plan, interval = _plan_interval_from_subscription(stripe_sub, session_meta)
 
                 sub_rec.plan = plan or sub_rec.plan or "free"
                 sub_rec.interval = interval
@@ -144,11 +142,10 @@ def stripe_webhook(request):
                         stripe_payment_intent=pi,
                         amount=amount_total or 0,
                     )
-                # No subscription field changes for one-time payments.
 
         return HttpResponse(status=200)
 
-    # 2) Keep subscription in sync with lifecycle events
+    # 2) Subscription lifecycle (created/updated/deleted)
     if etype in (
         "customer.subscription.created",
         "customer.subscription.updated",
@@ -158,10 +155,7 @@ def stripe_webhook(request):
         customer_id = stripe_sub.get("customer")
         sub_id = stripe_sub.get("id")
 
-        # Prefer matching by stored subscription id
         sub_rec = Subscription.objects.filter(stripe_subscription_id=sub_id).first()
-
-        # Fallback by customer id (helps first-time events)
         if sub_rec is None and customer_id:
             sub_rec = Subscription.objects.filter(stripe_customer_id=customer_id).first()
 
@@ -169,9 +163,8 @@ def stripe_webhook(request):
             logger.info("Subscription event for unknown local record; ignoring.")
             return HttpResponse(status=200)
 
-        items = stripe_sub.get("items", {}).get("data", [])
-        price_id = items[0]["price"]["id"] if items else None
-        plan, interval = _plan_interval_from_price(price_id) if price_id else (None, None)
+        # Plan/interval from lookup_key
+        plan, interval = _plan_interval_from_subscription(stripe_sub)
 
         if plan:
             sub_rec.plan = plan
@@ -187,7 +180,7 @@ def stripe_webhook(request):
         sub_rec.cancel_at_period_end = bool(stripe_sub.get("cancel_at_period_end"))
 
         if etype == "customer.subscription.deleted":
-            # Immediate downgrade to free on deletion
+            # Immediate downgrade to free
             sub_rec.plan = "free"
             sub_rec.interval = None
             sub_rec.stripe_subscription_id = None
@@ -196,7 +189,7 @@ def stripe_webhook(request):
         sub_rec.save()
         return HttpResponse(status=200)
 
-    # 3) Invoice succeeded -> refresh status/period end (covers renewals)
+    # 3) Invoice succeeded → refresh status/period end (renewals)
     if etype == "invoice.payment_succeeded":
         invoice = data
         sub_id = invoice.get("subscription")
@@ -216,7 +209,7 @@ def stripe_webhook(request):
                     logger.exception("Failed to refresh subscription after invoice.payment_succeeded: %s", e)
         return HttpResponse(status=200)
 
-    # 4) Invoice failed -> mark past_due (UI can prompt user to update card)
+    # 4) Invoice failed → mark past_due
     if etype == "invoice.payment_failed":
         invoice = data
         sub_id = invoice.get("subscription")
@@ -226,7 +219,6 @@ def stripe_webhook(request):
             sub_rec.save(update_fields=["status"])
         return HttpResponse(status=200)
 
-    # Acknowledge all other events
     return HttpResponse(status=200)
 
 
