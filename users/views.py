@@ -19,9 +19,10 @@ from rest_framework_simplejwt.views import TokenRefreshView
 # Swagger / drf-yasg
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
+from django.contrib.auth.models import AnonymousUser
 
 # App-specific imports
-from users.models import CustomUser
+from users.models import CustomUser, Subscription
 from .serializers import (
     RegisterSerializer,
     LoginSerializer,
@@ -29,7 +30,9 @@ from .serializers import (
     UserSerializer,
     UserListSerializer,
 )
+from .stripe_prices import STRIPE_PRICES
 
+import json
 from athleteai.permissions import BlockSuperUserPermission, IsAdminOnly
 
 # Stripe configuration
@@ -168,23 +171,95 @@ class CustomTokenRefreshView(TokenRefreshView):
 
 
 
-@method_decorator(csrf_exempt, name='dispatch')
-class CreateCheckoutSessionView(View):
+class CreateCheckoutSessionView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    @swagger_auto_schema(
+        request_body=openapi.Schema(
+            type=openapi.TYPE_OBJECT,
+            required=["type", "plan"],
+            properties={
+                "type": openapi.Schema(type=openapi.TYPE_STRING, enum=["subscription", "one_time", "free"]),
+                "plan": openapi.Schema(type=openapi.TYPE_STRING, enum=["essentials", "precision", "pdf_report", "free"]),
+                "interval": openapi.Schema(type=openapi.TYPE_STRING, enum=["month", "year"]),
+            }
+        ),
+        responses={200: "Checkout URL or success detail", 400: "Validation error", 401: "Unauthorized"}
+    )
     def post(self, request):
-        session = stripe.checkout.Session.create(
-            payment_method_types=['card'],
-            line_items=[{
-                'price_data': {
-                    'currency': 'usd',
-                    'unit_amount': 2000,
-                    'product_data': {
-                        'name': 'Signup Payment',
-                    },
-                },
-                'quantity': 1,
-            }],
-            mode='payment',
-            success_url='https://54.215.71.202.nip.io/api/users/success/?session_id={CHECKOUT_SESSION_ID}',
-            cancel_url='https://54.215.71.202.nip.io/api/users/cancel/',
-        )
-        return JsonResponse({'checkout_url': session.url})
+        user = request.user
+        flow_type = request.data.get("type")
+        plan = request.data.get("plan")
+        interval = request.data.get("interval")  # only for subscriptions
+
+        # Free plan (no Stripe call)
+        if flow_type == "free" or plan == "free":
+            sub, _ = Subscription.objects.get_or_create(user=user)
+            sub.plan = "free"
+            sub.interval = None
+            sub.status = "active"
+            sub.stripe_subscription_id = None
+            sub.save(update_fields=["plan", "interval", "status", "stripe_subscription_id"])
+            return Response({"detail": "Free plan activated"}, status=status.HTTP_200_OK)
+
+        # Ensure Stripe customer
+        sub, _ = Subscription.objects.get_or_create(user=user)
+        if sub.stripe_customer_id:
+            customer_id = sub.stripe_customer_id
+        else:
+            customer = stripe.Customer.create(email=user.email)
+            customer_id = customer.id
+            sub.stripe_customer_id = customer_id
+            sub.save(update_fields=["stripe_customer_id"])
+
+        success_url = 'https://54.215.71.202.nip.io/api/users/success/?session_id={CHECKOUT_SESSION_ID}'
+        cancel_url = 'https://54.215.71.202.nip.io/api/users/cancel/'
+
+        # Subscription flow
+        if flow_type == "subscription":
+            if plan not in ("essentials", "precision"):
+                return Response({"error": "Invalid plan"}, status=status.HTTP_400_BAD_REQUEST)
+            if interval not in ("month", "year"):
+                return Response({"error": "Missing or invalid interval"}, status=status.HTTP_400_BAD_REQUEST)
+
+            key = f"{plan}_{interval}"
+            price_id = STRIPE_PRICES.get(key)
+            if not price_id:
+                return Response({"error": "Invalid plan/interval"}, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                session = stripe.checkout.Session.create(
+                    customer=customer_id,
+                    mode='subscription',
+                    line_items=[{"price": price_id, "quantity": 1}],
+                    allow_promotion_codes=True,
+                    success_url=success_url,
+                    cancel_url=cancel_url,
+                    metadata={"user_id": str(user.id), "plan": plan, "interval": interval},
+                    client_reference_id=str(user.id),
+                )
+                return Response({"checkout_url": session.url}, status=status.HTTP_200_OK)
+            except stripe.error.StripeError as e:
+                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # One-time PDF flow
+        if flow_type == "one_time" and plan == "pdf_report":
+            price_id = STRIPE_PRICES.get("pdf_report")
+            if not price_id:
+                return Response({"error": "Price not configured"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            try:
+                session = stripe.checkout.Session.create(
+                    customer=customer_id,
+                    mode='payment',
+                    line_items=[{"price": price_id, "quantity": 1}],
+                    success_url=success_url,
+                    cancel_url=cancel_url,
+                    metadata={"user_id": str(user.id), "plan": plan},
+                    client_reference_id=str(user.id),
+                )
+                return Response({"checkout_url": session.url}, status=status.HTTP_200_OK)
+            except stripe.error.StripeError as e:
+                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({"error": "Invalid request"}, status=status.HTTP_400_BAD_REQUEST)

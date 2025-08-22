@@ -60,3 +60,27 @@ class CustomUser(AbstractUser):
 
     def is_athlete_role(self):
         return self.role == 'athlete'
+
+class Subscription(models.Model):
+    PLAN_CHOICES = (
+        ('free', 'Free'),
+        ('essentials', 'Essentials'),
+        ('precision', 'Precision'),
+    )
+    INTERVAL_CHOICES = (('month', 'Month'), ('year', 'Year'))
+
+    user = models.OneToOneField('users.CustomUser', on_delete=models.CASCADE, related_name='subscription')
+    plan = models.CharField(max_length=20, choices=PLAN_CHOICES, default='free')
+    interval = models.CharField(max_length=10, choices=INTERVAL_CHOICES, null=True, blank=True)
+    stripe_customer_id = models.CharField(max_length=100, blank=True, null=True)
+    stripe_subscription_id = models.CharField(max_length=100, blank=True, null=True)
+    status = models.CharField(max_length=30, default='inactive')  # active, trialing, past_due, canceled, incomplete
+    current_period_end = models.DateTimeField(null=True, blank=True)
+    cancel_at_period_end = models.BooleanField(default=False)
+
+class ReportPurchase(models.Model):
+    user = models.ForeignKey('users.CustomUser', on_delete=models.CASCADE, related_name='report_purchases')
+    stripe_payment_intent = models.CharField(max_length=100)
+    amount = models.IntegerField()  # in cents
+    created_at = models.DateTimeField(auto_now_add=True)
+    # optionally store a usage/entitlement flag (e.g., downloads remaining)
