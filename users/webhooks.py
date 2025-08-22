@@ -6,7 +6,6 @@ import logging
 from datetime import datetime
 
 import stripe
-from django.conf import settings
 from django.db import transaction
 from django.http import HttpResponse
 from django.shortcuts import render
@@ -15,7 +14,10 @@ from django.views.decorators.csrf import csrf_exempt
 
 from users.models import CustomUser, Subscription, ReportPurchase
 
+# --- Stripe keys from environment
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+
 logger = logging.getLogger(__name__)
 
 
@@ -57,10 +59,20 @@ def _plan_interval_from_subscription(stripe_sub: dict, session_meta: dict | None
         except ValueError:
             plan = interval = None
 
-    # Fallback to session metadata if needed
+    # Fallback to session metadata if needed (only available in checkout.session.completed)
     if (not plan or not interval) and session_meta:
         plan = plan or session_meta.get("plan")
         interval = interval or session_meta.get("interval")
+
+    # Optional last-ditch fallback from price object (amount + interval)
+    if (not plan or not interval) and price:
+        unit = price.get("unit_amount")
+        rec = price.get("recurring") or {}
+        interval = interval or rec.get("interval")  # "month" or "year"
+        if unit in (399, 3840):
+            plan = plan or "essentials"
+        elif unit in (799, 7670):
+            plan = plan or "precision"
 
     return plan, interval
 
@@ -75,21 +87,24 @@ def stripe_webhook(request):
     """
     payload = request.body
     sig_header = request.META.get("HTTP_STRIPE_SIGNATURE")
-    endpoint_secret = getattr(settings, "STRIPE_WEBHOOK_SECRET", None)
+    endpoint_secret = STRIPE_WEBHOOK_SECRET
 
     if not endpoint_secret:
-        logger.error("STRIPE_WEBHOOK_SECRET is not configured")
-        return HttpResponse(status=500)
+        logger.error("STRIPE_WEBHOOK_SECRET missing; refusing webhook")
+        return HttpResponse(status=400)
 
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, endpoint_secret)
     except ValueError:
+        logger.warning("Stripe webhook: invalid payload")
         return HttpResponse(status=400)
     except stripe.error.SignatureVerificationError:
+        logger.warning("Stripe webhook: signature verification failed")
         return HttpResponse(status=400)
 
     etype = event.get("type")
     data = event.get("data", {}).get("object", {})
+    logger.info("Stripe webhook received: %s", etype)
 
     # 1) Checkout completed (subscription or one-time)
     if etype == "checkout.session.completed":
@@ -159,6 +174,19 @@ def stripe_webhook(request):
         if sub_rec is None and customer_id:
             sub_rec = Subscription.objects.filter(stripe_customer_id=customer_id).first()
 
+        # If still missing, try to resolve the user from the Stripe customer to create it
+        if sub_rec is None and customer_id:
+            try:
+                sc = stripe.Customer.retrieve(customer_id)
+                email = sc.get("email")
+                user = CustomUser.objects.filter(email=email).first() if email else None
+                if user:
+                    sub_rec, _ = Subscription.objects.get_or_create(
+                        user=user, defaults={"stripe_customer_id": customer_id}
+                    )
+            except Exception as e:
+                logger.exception("Could not resolve user from customer %s: %s", customer_id, e)
+
         if sub_rec is None:
             logger.info("Subscription event for unknown local record; ignoring.")
             return HttpResponse(status=200)
@@ -219,6 +247,7 @@ def stripe_webhook(request):
             sub_rec.save(update_fields=["status"])
         return HttpResponse(status=200)
 
+    # Acknowledge all other events
     return HttpResponse(status=200)
 
 
