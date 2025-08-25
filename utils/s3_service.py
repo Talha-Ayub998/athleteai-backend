@@ -22,20 +22,39 @@ class S3Service:
     def upload_files(self, files, user_id):
         """
         Uploads multiple files to S3 for the given user_id.
+        - Rewinds file objects before upload (critical if they were read earlier)
+        - Sends correct ContentType and ContentDisposition
         """
         uploaded = []
 
         for file_obj in files:
+            # Some frameworks leave name on a wrapped file; keep original but sanitize
             safe_name = file_obj.name.replace(" ", "_")
             filename = f"{uuid.uuid4()}_{safe_name}"
             key = f"user_uploads/{user_id}/{filename}"
 
             try:
-                self.s3_client.upload_fileobj(file_obj, self.bucket_name, key)
+                # ALWAYS rewind before uploading (file may have been read already)
+                try:
+                    file_obj.seek(0, os.SEEK_SET)
+                except Exception:
+                    pass  # some backends may not support seek; most do
+
+                self.s3_client.upload_fileobj(
+                    Fileobj=file_obj,
+                    Bucket=self.bucket_name,
+                    Key=key,
+                    ExtraArgs={
+                        "ContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "ContentDisposition": f'attachment; filename="{safe_name}"',
+                        "ACL": "private",
+                    },
+                )
+
                 uploaded.append({
                     "key": key,
                     "url": f"https://{self.bucket_name}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{key}",
-                    "name": safe_name
+                    "name": safe_name,
                 })
             except ClientError as e:
                 print(f"Upload error ({safe_name}):", e)

@@ -19,34 +19,39 @@ class UploadExcelFileView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
     @swagger_auto_schema(
-        operation_description="Upload an Excel file. Admins can upload on behalf of users by providing `user_id`.",
-        manual_parameters=[
-            openapi.Parameter(
-                name="file",
-                in_=openapi.IN_FORM,
-                type=openapi.TYPE_FILE,
-                required=True,
-                description="Excel .xlsx file to be uploaded",
-            ),
-            openapi.Parameter(
-                name="user_id",
-                in_=openapi.IN_FORM,
-                type=openapi.TYPE_INTEGER,
-                required=False,
-                description="User ID to upload report on behalf of (admin only)",
-            ),
-        ],
-        responses={
-            200: openapi.Response(description="Success"),
-            400: "Invalid file or duplicate upload",
-            403: "Permission denied",
-            500: "Internal server error",
-        },
+    operation_description="Upload an Excel file. Admins can upload on behalf of users by providing `user_id`.",
+    manual_parameters=[
+        openapi.Parameter(
+            name="file",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_FILE,
+            required=True,
+            description="Excel .xlsx file to be uploaded",
+        ),
+        openapi.Parameter(
+            name="user_id",
+            in_=openapi.IN_FORM,
+            type=openapi.TYPE_INTEGER,
+            required=False,
+            description="User ID to upload report on behalf of (admin only)",
+        ),
+    ],
+    responses={
+        200: openapi.Response(description="Success"),
+        400: "Invalid file or duplicate upload",
+        403: "Permission denied",
+        500: "Internal server error",
+    },
     )
     def post(self, request):
+        """
+        Uploads a single .xlsx, validates & processes it, stores in S3, then records DB metadata.
+        Critical fixes:
+        - Rewind (seek(0)) after each read (hashing/processing) and before S3 upload
+        - Tolerate common Excel MIME types (some browsers send octet-stream)
+        """
         try:
-
-            # Step 1: Parse uploaded file
+            # ---- 1) Extract file -------------------------------------------------
             files = request.FILES.getlist("file")
             if not files:
                 return Response({"error": "No files provided."}, status=400)
@@ -54,59 +59,95 @@ class UploadExcelFileView(APIView):
             excel_file = files[0]
             filename = excel_file.name
 
-            if not filename.endswith(".xlsx") or excel_file.content_type != "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":
+            # Accept typical Excel types; some clients send application/octet-stream
+            allowed_suffix = filename.lower().endswith(".xlsx")
+            allowed_cts = {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/octet-stream",
+                "application/vnd.ms-excel",  # occasionally seen
+            }
+            if not allowed_suffix:
                 return Response({"error": "Only .xlsx Excel files are allowed."}, status=400)
 
-            # Step 2: Determine the target user
-            target_user = request.user  # default: self-upload
-
+            # ---- 2) Resolve target user (admin may upload for athlete) ----------
+            target_user = request.user
             user_id = request.data.get("user_id")
             if user_id:
-                if request.user.role != 'admin':
+                if getattr(request.user, "role", None) != "admin":
                     return Response({"error": "Only admins can upload reports for other users."}, status=403)
                 try:
-                    target_user = CustomUser.objects.get(id=user_id, role='athlete')
+                    target_user = CustomUser.objects.get(id=user_id, role="athlete")
                 except CustomUser.DoesNotExist:
                     return Response({"error": "Invalid athlete user_id provided."}, status=400)
 
-            # Step 3: Check for duplicate upload
+            # ---- 3) Hash to detect duplicates -----------------------------------
+            try:
+                excel_file.seek(0)
+            except Exception:
+                pass
             file_hash = get_file_hash(excel_file)
-            duplicate_report = AthleteReport.objects.filter(user=target_user, file_hash=file_hash).first()
+
+            duplicate_report = AthleteReport.objects.filter(
+                user=target_user, file_hash=file_hash
+            ).first()
             if duplicate_report:
-                return Response({
-                    "status": "duplicate",
-                    "message": "This file has already been uploaded by the user.",
-                    "existing_filename": duplicate_report.filename,
-                    "uploaded_at": duplicate_report.created_at if hasattr(duplicate_report, "created_at") else None
-                }, status=400)
+                return Response(
+                    {
+                        "status": "duplicate",
+                        "message": "This file has already been uploaded by the user.",
+                        "existing_filename": duplicate_report.filename,
+                        "uploaded_at": getattr(duplicate_report, "created_at", None),
+                    },
+                    status=400,
+                )
 
-            # Step 4: Process and validate
-            excel_file.seek(0)
+            # ---- 4) Process & validate ------------------------------------------
+            try:
+                excel_file.seek(0)
+            except Exception:
+                pass
             result, success = process_excel_file(excel_file)
-
             if not success:
-                return Response({"status": "error", "message": "Validation failed.", "errors": result}, status=400)
+                return Response(
+                    {"status": "error", "message": "Validation failed.", "errors": result},
+                    status=400,
+                )
 
-            # Step 5: Upload to S3
+            # ---- 5) Upload to S3 (rewind again BEFORE upload) -------------------
+            try:
+                excel_file.seek(0)
+            except Exception:
+                pass
+
             s3 = S3Service()
             s3_result = s3.upload_files([excel_file], user_id=target_user.id)
-            s3_key_uploaded = s3_result[0]["key"] if s3_result else None
+            if not s3_result or "key" not in s3_result[0]:
+                return Response({"error": "Failed to upload file to storage."}, status=500)
 
-            # Step 6: Save to DB
-            file_size_mb = round(excel_file.size / (1024 * 1024), 2)
+            s3_key_uploaded = s3_result[0]["key"]
+            s3_url_uploaded = s3_result[0].get("url")
+
+            # ---- 6) Save DB record ----------------------------------------------
+            file_size_mb = round(getattr(excel_file, "size", 0) / (1024 * 1024), 2)
             AthleteReport.objects.create(
                 user=target_user,
                 filename=filename,
                 pdf_data=result,
                 file_size_mb=file_size_mb,
                 file_hash=file_hash,
-                s3_key=s3_key_uploaded
+                s3_key=s3_key_uploaded,
             )
 
-            return Response({
-                "status": "success",
-                "message": f"Report uploaded successfully for {target_user.email}.",
-            }, status=200)
+            # ---- 7) Done ---------------------------------------------------------
+            return Response(
+                {
+                    "status": "success",
+                    "message": f"Report uploaded successfully for {target_user.email}.",
+                    "s3_key": s3_key_uploaded,
+                    "s3_url": s3_url_uploaded,
+                },
+                status=200,
+            )
 
         except Exception as e:
             print(f"Upload error: {e}")
