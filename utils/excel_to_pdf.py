@@ -690,7 +690,7 @@ def build_pdf_dict(name, language, stats_df, results_df, moves_df, grouped_df, s
         },
         "final_summary": {
             "text": summary_text,
-            "disclaimer": disclaimer_summary or None
+            # "disclaimer": disclaimer_summary or None
         },
         "graph_data": graph_data
     }
