@@ -637,6 +637,7 @@ def generate_summary(stats_df, results_df, name, language):
     message_to_pass = f"Please analyze this data: {json_data}"
     response = model_generate_response(GPT_MODELS['summary_model'], message_to_pass, moves_list_str, temperature=0.4, max_tokens=250)
     response = gender_neutral_model(response.strip("[]")).strip()
+    response = re.sub(r"\[([^\]]+)\]", r"\1", response)
 
     translated = translate_text(response, language)
     logging.info(f"Translated Summary: {translated}")
