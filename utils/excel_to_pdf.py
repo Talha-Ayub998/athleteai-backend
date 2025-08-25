@@ -661,10 +661,10 @@ def build_pdf_dict(name, language, stats_df, results_df, moves_df, grouped_df, s
         f"{match_stats['win_ratio']}% Win Ratio"
     ]
 
-    disclaimer_summary = ""
-    if "no" in model_check_for_analysis(json_data).lower():
-        disclaimer_text = "Disclaimer: The athlete's data is insufficient for reliable suggestions, so recommendations may not be accurate."
-        disclaimer_summary = translate_text(disclaimer_text, language)
+    # disclaimer_summary = ""
+    # if "no" in model_check_for_analysis(json_data).lower():
+    #     disclaimer_text = "Disclaimer: The athlete's data is insufficient for reliable suggestions, so recommendations may not be accurate."
+    #     disclaimer_summary = translate_text(disclaimer_text, language)
 
     graph_data = {
         "offense_successes": get_top_non_zero(grouped_df, "offense_succeeded", 7),
