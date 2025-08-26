@@ -315,61 +315,63 @@ def calculate_match_statistics(matches_data, moves_df, results_data):
     Calculates match statistics from the given DataFrame.
 
     Parameters:
-    - matches_data: pandas DataFrame with columns ['move_name', 'offense_attempted', 'offense_succeeded', 'defense_attempted', 'defense_succeeded', 'match'].
-    - moves_df: pandas DataFrame with columns ['move_name', 'category', 'categorization', 'points'].
-    - results_data: pandas DataFrame with columns ['Result', 'Match Type', 'match', 'Referee Decision', 'Disqualified?'].
+    - matches_data: pandas DataFrame with columns
+      ['move_name','offense_attempted','offense_succeeded','defense_attempted','defense_succeeded','match'].
+    - moves_df: pandas DataFrame with columns ['move_name','category','categorization','points'].
+    - results_data: pandas DataFrame with columns ['Result','Match Type','match','Referee Decision','Disqualified?'].
 
     Returns:
-    - A dictionary containing:
-        - total_matches: Total number of matches.
-        - wins: Number of wins.
-        - losses: Number of losses.
-        - draws: Number of draws (if any).
-        - win_ratio: Win ratio as a percentage.
-        - points_details: List of strings with points details for each match.
+    - dict with totals, ratios, referee/DQ counts, and a sorted points_details list.
     """
-    # Merge the match statistics data
+
+    # Merge for points lookup
     merged_data = matches_data.merge(moves_df, on='move_name', how='left')
-    
-    # Filter results_data for matches containing "Points"
-    points_matches = results_data[results_data['Match Type'].str.contains("Points")]['match'].unique()
-    
-    # Group by match
-    grouped = merged_data.groupby('match')
-    
+    if 'points' in merged_data.columns:
+        merged_data['points'] = merged_data['points'].fillna(0)
+
+    # Matches that were decided by points
+    points_matches = results_data[results_data['Match Type'].str.contains("Points", na=False)]['match'].unique()
+
+    grouped = merged_data.groupby('match', dropna=False)
+
     points_details = []
     not_applicable_matches = []
 
     for match, group in grouped:
         if match in points_matches:
-            # Calculate points for the player (successful offenses)
             player_points = (group['offense_succeeded'] * group['points']).sum()
-            
-            # Calculate points for the opponent (unsuccessful defenses)
             opponent_points = ((group['defense_attempted'] - group['defense_succeeded']) * group['points']).sum()
-
-            # Append formatted points details
             points_details.append(f"{match} - {player_points} – {opponent_points} Points")
         else:
-            not_applicable_matches.append(match.replace("-", " "))
-    
-    # Append the "Not Applicable" summary at the end
+            # Keep user's display style for N/A (replace "-" with " ")
+            not_applicable_matches.append(str(match).replace("-", " "))
+
+    # Append the combined N/A line at the end (will still be forced to end by the sorter)
     if not_applicable_matches:
-        points_details.append(f"{', '.join(map(str, not_applicable_matches))} - Not Applicable")
-    
-    # Calculate overall statistics
+        points_details.append(f"{', '.join(not_applicable_matches)} - Not Applicable")
+
+    # ---- Force ascending order by match number; keep "Not Applicable" last ----
+    def sort_key(s: str) -> int:
+        if "Not Applicable" in s:
+            return 10**9  # push N/A to the end
+        m = re.search(r"Match[- ](\d+)", s)
+        return int(m.group(1)) if m else 10**8  # unknowns before N/A but after numbered
+
+    points_details.sort(key=sort_key)
+
+    # Overall stats
     total_matches = len(results_data['match'].unique())
     wins = (results_data['Result'] == 'Win').sum()
     losses = (results_data['Result'] == 'Lost').sum()
     draws = (results_data['Result'] == 'Draw').sum()
     win_ratio = round(wins / total_matches * 100, 2) if total_matches > 0 else 0
-    
-    # Calculate referee decisions
+
+    # Referee decisions
     wins_referee = ((results_data['Result'] == 'Win') & (results_data['Referee Decision'] == 'Yes')).sum()
     losses_referee = ((results_data['Result'] == 'Lost') & (results_data['Referee Decision'] == 'Yes')).sum()
     draws_referee = ((results_data['Result'] == 'Draw') & (results_data['Referee Decision'] == 'Yes')).sum()
 
-    # Calculate disqualifications
+    # Disqualifications
     wins_dq = ((results_data['Result'] == 'Win') & (results_data['Disqualified?'] == 'Yes')).sum()
     losses_dq = ((results_data['Result'] == 'Lost') & (results_data['Disqualified?'] == 'Yes')).sum()
     draws_dq = ((results_data['Result'] == 'Draw') & (results_data['Disqualified?'] == 'Yes')).sum()
@@ -387,10 +389,9 @@ def calculate_match_statistics(matches_data, moves_df, results_data):
         'losses_dq': losses_dq,
         'draws_dq': draws_dq,
     }
-    
     if draws > 0:
         result['draws'] = draws
-    
+
     return result
 
 
