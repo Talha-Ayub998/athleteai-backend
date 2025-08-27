@@ -257,4 +257,5 @@ def payment_success(request):
 
 
 def payment_cancel(request):
-    return render(request, "payment_cancel.html")
+    frontend_url = os.getenv("FRONTEND_BASE_URL", "https://athleteai-frontend.vercel.app")
+    return render(request, "payment_cancel.html", {"frontend_url": frontend_url})
