@@ -253,7 +253,12 @@ def stripe_webhook(request):
 
 def payment_success(request):
     session_id = request.GET.get("session_id")
-    return render(request, "payment_success.html", {"session_id": session_id})
+    frontend_url = os.getenv("FRONTEND_BASE_URL", "https://athleteai-frontend.vercel.app")
+    return render(
+        request,
+        "payment_success.html",
+        {"session_id": session_id, "frontend_url": frontend_url},
+    )
 
 
 def payment_cancel(request):

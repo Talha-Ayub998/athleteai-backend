@@ -22,7 +22,9 @@
         <h1 class="text-success">✅ Payment Successful!</h1>
         <p class="mt-3">Your session ID:</p>
         <code>{{ session_id }}</code>
-        <p class="mt-4"><a href="/" class="btn btn-outline-primary">Go to Homepage</a></p>
-    </div>
+        <p class="mt-4">
+            <a href="{{ frontend_url }}" class="btn btn-outline-primary">Go to Homepage</a>
+        </p>
+    </div>    
 </body>
 </html>
