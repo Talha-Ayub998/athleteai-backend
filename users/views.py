@@ -22,13 +22,14 @@ from drf_yasg import openapi
 from django.contrib.auth.models import AnonymousUser
 
 # App-specific imports
-from users.models import CustomUser, Subscription
+from users.models import CustomUser, Subscription, ReportPurchase
 from .serializers import (
     RegisterSerializer,
     LoginSerializer,
     LogoutSerializer,
     UserSerializer,
     UserListSerializer,
+    CurrentSubscriptionSerializer
 )
 from .stripe_prices import STRIPE_PRICES
 from .stripe_utils import get_price_id
@@ -46,15 +47,97 @@ class RegisterView(APIView):
     @swagger_auto_schema(request_body=RegisterSerializer)
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
-            refresh = RefreshToken.for_user(user)
-            return Response({
-                "user": UserSerializer(user).data,
-                "refresh": str(refresh),
-                "access": str(refresh.access_token),
-            }, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # 1) create the user
+        user = serializer.save()
+        refresh = RefreshToken.for_user(user)
+
+        # 2) if website sent plan params, immediately create Stripe Checkout Session
+        flow_type = (request.data.get("type") or "").strip().lower()
+        plan      = (request.data.get("plan") or "").strip().lower()
+        interval  = (request.data.get("interval") or "").strip().lower()
+
+        checkout_url = None  # default: no checkout if no plan provided
+
+        try:
+            if flow_type == "free" or plan == "free":
+                # Activate free locally (no Stripe)
+                sub, _ = Subscription.objects.get_or_create(user=user)
+                sub.plan = "free"
+                sub.interval = None
+                sub.status = "active"
+                sub.stripe_subscription_id = None
+                sub.save(update_fields=["plan", "interval", "status", "stripe_subscription_id"])
+
+            elif flow_type in ("subscription", "one_time") and plan:
+                # Ensure Stripe customer
+                sub, _ = Subscription.objects.get_or_create(user=user)
+                if sub.stripe_customer_id:
+                    customer_id = sub.stripe_customer_id
+                else:
+                    customer = stripe.Customer.create(email=user.email)
+                    customer_id = customer.id
+                    sub.stripe_customer_id = customer_id
+                    sub.save(update_fields=["stripe_customer_id"])
+
+                # Use your current Django success/cancel routes (keeps present flow)
+                success_url = 'https://54.215.71.202.nip.io/api/users/success/?session_id={CHECKOUT_SESSION_ID}'
+                cancel_url  = 'https://54.215.71.202.nip.io/api/users/cancel/'
+
+                if flow_type == "subscription":
+                    if plan not in ("essentials", "precision"):
+                        return JsonResponse({"error": "Invalid plan"}, status=400)
+                    if interval not in ("month", "year"):
+                        return JsonResponse({"error": "Missing or invalid interval"}, status=400)
+
+                    key = f"{plan}_{interval}"
+                    price_id = get_price_id(key)
+
+                    session = stripe.checkout.Session.create(
+                        customer=customer_id,
+                        mode='subscription',
+                        line_items=[{"price": price_id, "quantity": 1}],
+                        allow_promotion_codes=True,
+                        success_url=success_url,
+                        cancel_url=cancel_url,
+                        metadata={"user_id": str(user.id), "plan": plan, "interval": interval},
+                        client_reference_id=str(user.id),
+                        idempotency_key=str(uuid.uuid4()),
+                    )
+                    checkout_url = session.url
+
+                elif flow_type == "one_time" and plan == "pdf_report":
+                    price_id = get_price_id("pdf_report")
+
+                    session = stripe.checkout.Session.create(
+                        customer=customer_id,
+                        mode='payment',
+                        line_items=[{"price": price_id, "quantity": 1}],
+                        success_url=success_url,
+                        cancel_url=cancel_url,
+                        metadata={"user_id": str(user.id), "plan": plan},
+                        client_reference_id=str(user.id),
+                        idempotency_key=str(uuid.uuid4()),
+                    )
+                    checkout_url = session.url
+
+        except stripe.error.StripeError as e:
+            # Don’t fail signup; frontend can call /create-checkout-session later to retry
+            checkout_url = None
+        except ValueError as e:
+            # get_price_id() raised (unknown price key)
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 3) return tokens PLUS checkout_url (if we created one)
+        return Response({
+            "user": UserSerializer(user).data,
+            "refresh": str(refresh),
+            "access": str(refresh.access_token),
+            "checkout_url": checkout_url,  # frontend: if present, redirect to it
+        }, status=status.HTTP_201_CREATED)
+
 
 class ListUsersView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission, IsAdminOnly]
@@ -173,26 +256,19 @@ class CustomTokenRefreshView(TokenRefreshView):
 
 
 
+# add at the top of the file
+import uuid
+
 class CreateCheckoutSessionView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
-    @swagger_auto_schema(
-        request_body=openapi.Schema(
-            type=openapi.TYPE_OBJECT,
-            required=["type", "plan"],
-            properties={
-                "type": openapi.Schema(type=openapi.TYPE_STRING, enum=["subscription", "one_time", "free"]),
-                "plan": openapi.Schema(type=openapi.TYPE_STRING, enum=["essentials", "precision", "pdf_report", "free"]),
-                "interval": openapi.Schema(type=openapi.TYPE_STRING, enum=["month", "year"]),
-            }
-        ),
-        responses={200: "Checkout URL or success detail", 400: "Validation error", 401: "Unauthorized"}
-    )
+    @swagger_auto_schema(...)
     def post(self, request):
         user = request.user
-        flow_type = request.data.get("type")
-        plan = request.data.get("plan")
-        interval = request.data.get("interval")  # only for subscriptions
+        # ✅ normalize inputs
+        flow_type = (request.data.get("type") or "").strip().lower()
+        plan      = (request.data.get("plan") or "").strip().lower()
+        interval  = (request.data.get("interval") or "").strip().lower()  # only for subscriptions
 
         # Free plan (no Stripe call)
         if flow_type == "free" or plan == "free":
@@ -240,6 +316,8 @@ class CreateCheckoutSessionView(APIView):
                     cancel_url=cancel_url,
                     metadata={"user_id": str(user.id), "plan": plan, "interval": interval},
                     client_reference_id=str(user.id),
+                    # ✅ prevent duplicate sessions on retry
+                    idempotency_key=str(uuid.uuid4()),
                 )
                 return Response({"checkout_url": session.url}, status=status.HTTP_200_OK)
             except stripe.error.StripeError as e:
@@ -261,9 +339,72 @@ class CreateCheckoutSessionView(APIView):
                     cancel_url=cancel_url,
                     metadata={"user_id": str(user.id), "plan": plan},
                     client_reference_id=str(user.id),
+                    # ✅ prevent duplicate sessions on retry
+                    idempotency_key=str(uuid.uuid4()),
                 )
                 return Response({"checkout_url": session.url}, status=status.HTTP_200_OK)
             except stripe.error.StripeError as e:
                 return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response({"error": "Invalid request"}, status=status.HTTP_400_BAD_REQUEST)
+
+class CancelSubscriptionView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    # body: {"at_period_end": true}  # default true
+    def post(self, request):
+        at_period_end = bool(request.data.get("at_period_end", True))
+        sub = getattr(request.user, "subscription", None)
+        if not sub or not sub.stripe_subscription_id:
+            return Response({"error": "No active Stripe subscription"}, status=400)
+
+        try:
+            if at_period_end:
+                stripe.Subscription.modify(
+                    sub.stripe_subscription_id,
+                    cancel_at_period_end=True,
+                )
+                # Optimistic local update (webhook will confirm)
+                sub.cancel_at_period_end = True
+                sub.save(update_fields=["cancel_at_period_end"])
+                return Response({"detail": "Subscription will cancel at period end"})
+            else:
+                stripe.Subscription.delete(sub.stripe_subscription_id)
+                # Optimistic local update; webhook will switch to free
+                sub.status = "canceled"
+                sub.cancel_at_period_end = False
+                sub.save(update_fields=["status", "cancel_at_period_end"])
+                return Response({"detail": "Subscription canceled immediately"})
+        except stripe.error.StripeError as e:
+            return Response({"error": str(e)}, status=400)
+
+
+class CurrentSubscriptionView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    @swagger_auto_schema(
+        operation_description="Get the current user's subscription state",
+        responses={200: CurrentSubscriptionSerializer}
+    )
+
+    def get(self, request):
+        # Ensure a row exists (new users may not have one yet)
+        sub, _ = Subscription.objects.get_or_create(user=request.user)
+
+        payload = {
+            "plan": sub.plan,
+            "interval": sub.interval,
+            "status": sub.status,
+            "cancel_at_period_end": sub.cancel_at_period_end,
+            "current_period_end": sub.current_period_end,  # DRF will render ISO 8601
+            "stripe_customer_id": sub.stripe_customer_id,
+            "stripe_subscription_id": sub.stripe_subscription_id,
+        }
+
+        # OPTIONAL: remaining report credits (only if you added ReportPurchase.consumed)
+        if hasattr(ReportPurchase, "consumed"):
+            total = ReportPurchase.objects.filter(user=request.user).count()
+            used = ReportPurchase.objects.filter(user=request.user, consumed=True).count()
+            payload["remaining_report_credits"] = total - used
+
+        return Response(CurrentSubscriptionSerializer(payload).data, status=status.HTTP_200_OK)

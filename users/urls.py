@@ -1,7 +1,9 @@
 from django.urls import path
 from .views import RegisterView, LoginView, \
                     LogoutView, CustomTokenRefreshView, \
-                    CreateCheckoutSessionView, ListUsersView, CurrentUserView
+                    CreateCheckoutSessionView, ListUsersView,\
+                    CurrentUserView, CancelSubscriptionView,\
+                    CurrentSubscriptionView
 from users.webhooks import *
 
 urlpatterns = [
@@ -16,6 +18,8 @@ urlpatterns = [
 
 urlpatterns += [
     path('stripe/webhook/', stripe_webhook, name='stripe-webhook'),
+    path('subscription/cancel/', CancelSubscriptionView.as_view(), name='subscription-cancel'),
+    path('my-subscription/', CurrentSubscriptionView.as_view(), name='subscription-details'),
     path('success/', payment_success, name='payment-success'),
     path('cancel/', payment_cancel, name='payment-cancel'),
 ]
