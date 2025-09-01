@@ -218,12 +218,12 @@ class ListUserReportsView(APIView):
             reports = [
                 {
                     "id": r.id,
+                    "uploaded_by": r.user.email,
+                    "user_id": r.user_id,
                     "filename": r.filename,
                     "uploaded_at": r.uploaded_at,
                     "file_size_mb": r.file_size_mb,
                     "pdf_data": r.pdf_data,
-                    "uploaded_by": r.user.email,
-                    "user_id": r.user_id,
                     "video_urls": videos_by_user.get(r.user_id, []),  # << inline here
                 }
                 for r in reports_qs
