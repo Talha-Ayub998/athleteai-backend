@@ -11,9 +11,11 @@ from drf_yasg import openapi
 from django.db.models import Q
 from users.models import CustomUser
 from athleteai.permissions import BlockSuperUserPermission
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.generics import ListAPIView
 
 from reports.models import AthleteReport, VideoUrl
-from reports.serializers import VideoUrlSerializer
+from reports.serializers import VideoUrlSerializer, VideoUrlReadSerializer
 
 class UploadExcelFileView(APIView):
     parser_classes = [MultiPartParser]
@@ -266,3 +268,22 @@ class UploadVideoUrlView(APIView):
                 status=status.HTTP_201_CREATED
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class DefaultPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+class ListUserVideoUrlsView(ListAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = VideoUrlReadSerializer
+    pagination_class = DefaultPagination
+
+    def get_queryset(self):
+        qs = VideoUrl.objects.filter(user=self.request.user).order_by("-created_at")
+        q = self.request.query_params.get("q")
+        if q:
+            qs = qs.filter(Q(url__icontains=q))
+        return qs
