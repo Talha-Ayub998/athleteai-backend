@@ -13,6 +13,7 @@ from users.models import CustomUser
 from athleteai.permissions import BlockSuperUserPermission
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.generics import ListAPIView
+from collections import defaultdict
 
 from reports.models import AthleteReport, VideoUrl
 from reports.serializers import VideoUrlSerializer, VideoUrlReadSerializer
@@ -164,26 +165,19 @@ class ListUserReportsView(APIView):
         operation_description=(
             "Admins can view all athlete reports and their own reports; "
             "athletes can view only their own. Superusers are not allowed.\n\n"
-            "Optional: include video URLs for the same users via `include_videos` query param (default true)."
+            "Each report includes `video_urls` for the same user."
         ),
         manual_parameters=[
-            openapi.Parameter(
-                name="include_videos",
-                in_=openapi.IN_QUERY,
-                type=openapi.TYPE_BOOLEAN,
-                description="Include video URLs grouped by user_id (default: true).",
-                required=False
-            ),
             openapi.Parameter(
                 name="q",
                 in_=openapi.IN_QUERY,
                 type=openapi.TYPE_STRING,
-                description="(Reserved) Search within URLs when videos included (icontains).",
+                description="Optional: filter included video URLs by partial match (icontains) on URL.",
                 required=False
             ),
         ],
         responses={
-            200: openapi.Response(description="Reports + (optional) video URLs"),
+            200: openapi.Response(description="List of reports (each with that user's video URLs)"),
             403: "Forbidden",
             500: "Failed to fetch report list",
         }
@@ -191,21 +185,36 @@ class ListUserReportsView(APIView):
     def get(self, request):
         try:
             user = request.user
-            include_videos = str(request.query_params.get("include_videos", "true")).lower() in {"1", "true", "yes"}
 
-            # ✅ Reports visibility rules
+            # ----- Reports visibility rules
             if user.role == 'admin':
-                reports_qs = AthleteReport.objects.filter(
-                    Q(user__role='athlete') | Q(user=user)
-                ).exclude(
-                    ~Q(user=user) & Q(user__role='admin')
+                reports_qs = (
+                    AthleteReport.objects
+                    .filter(Q(user__role='athlete') | Q(user=user))
+                    .exclude(~Q(user=user) & Q(user__role='admin'))
                 )
             else:  # athlete
                 reports_qs = AthleteReport.objects.filter(user=user)
 
             reports_qs = reports_qs.select_related("user").order_by('-uploaded_at')
 
-            # Serialize reports (unchanged shape)
+            # ----- Build one query for all relevant users' videos, then map by user_id
+            user_ids = list(set(reports_qs.values_list('user_id', flat=True)))
+            videos_qs = VideoUrl.objects.filter(user_id__in=user_ids).order_by("-created_at")
+
+            q = request.query_params.get("q")
+            if q:
+                videos_qs = videos_qs.filter(url__icontains=q)
+
+            videos_by_user = defaultdict(list)
+            for v in videos_qs:
+                videos_by_user[v.user_id].append({
+                    "id": v.id,
+                    "url": v.url,
+                    "created_at": v.created_at,
+                })
+
+            # ----- Serialize reports, inlining that user's video URLs
             reports = [
                 {
                     "id": r.id,
@@ -215,34 +224,12 @@ class ListUserReportsView(APIView):
                     "pdf_data": r.pdf_data,
                     "uploaded_by": r.user.email,
                     "user_id": r.user_id,
+                    "video_urls": videos_by_user.get(r.user_id, []),  # << inline here
                 }
                 for r in reports_qs
             ]
 
-            response_payload = {"reports": reports}
-
-            # ✅ Include Video URLs for all users present in reports (one batch query)
-            if include_videos:
-                user_ids = list({r.user_id for r in reports_qs})
-                videos_qs = VideoUrl.objects.filter(user_id__in=user_ids).select_related("user").order_by("-created_at")
-
-                # Optional simple client-side search on URL string if you want:
-                q = request.query_params.get("q")
-                if q:
-                    videos_qs = videos_qs.filter(url__icontains=q)
-
-                # Group by user_id to keep payload tidy
-                videos_by_user = {}
-                for v in videos_qs:
-                    videos_by_user.setdefault(v.user_id, []).append({
-                        "id": v.id,
-                        "url": v.url,
-                        "created_at": v.created_at,
-                    })
-
-                response_payload["video_urls_by_user"] = videos_by_user
-
-            return Response(response_payload, status=status.HTTP_200_OK)
+            return Response(reports, status=status.HTTP_200_OK)
 
         except Exception as e:
             print(f"List report error: {e}")
