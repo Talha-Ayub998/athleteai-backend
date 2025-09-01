@@ -3,4 +3,4 @@ from rest_framework import serializers
 
 # Serializer to validate input
 class VideoUrlSerializer(serializers.Serializer):
-    url = serializers.URLField(required=True)
+    video_url = serializers.URLField(required=True)
