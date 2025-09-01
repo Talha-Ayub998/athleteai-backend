@@ -288,15 +288,25 @@ class UploadVideoUrlView(APIView):
     def post(self, request):
         serializer = VideoUrlSerializer(data=request.data)
         if serializer.is_valid():
-            video_url = serializer.validated_data['video_url']
+            video_url = serializer.validated_data['url']
 
-            # Save in DB tied to the logged-in user
-            VideoUrl.objects.create(user=request.user, url=video_url)
-
-            return Response(
-                {"message": "Video URL saved successfully", "video_url": video_url},
-                status=status.HTTP_201_CREATED
+            # Get existing or create new
+            obj, created = VideoUrl.objects.get_or_create(
+                user=request.user,
+                url=video_url,
             )
+
+            if created:
+                return Response(
+                    {"message": "Video URL saved successfully", "id": obj.id, "url": obj.url},
+                    status=status.HTTP_201_CREATED
+                )
+            else:
+                return Response(
+                    {"message": "Video URL already exists", "id": obj.id, "url": obj.url},
+                    status=status.HTTP_200_OK
+                )
+
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 

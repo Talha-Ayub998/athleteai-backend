@@ -17,15 +17,12 @@ class AthleteReport(models.Model):
         return f"{self.user.email} - {self.filename}"
 
 class VideoUrl(models.Model):
-    user = models.ForeignKey(
-        CustomUser,
-        on_delete=models.CASCADE,
-        related_name="video_urls"
-    )
+    user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name="video_urls")
     url = models.URLField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        unique_together = ("user", "url")
         ordering = ("-created_at",)
 
     def __str__(self):
