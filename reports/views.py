@@ -288,7 +288,7 @@ class UploadVideoUrlView(APIView):
     def post(self, request):
         serializer = VideoUrlSerializer(data=request.data)
         if serializer.is_valid():
-            video_url = serializer.validated_data['url']
+            video_url = serializer.validated_data['video_url']
 
             # Get existing or create new
             obj, created = VideoUrl.objects.get_or_create(
