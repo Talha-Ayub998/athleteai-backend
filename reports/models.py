@@ -15,3 +15,18 @@ class AthleteReport(models.Model):
 
     def __str__(self):
         return f"{self.user.email} - {self.filename}"
+
+class VideoUrl(models.Model):
+    user = models.ForeignKey(
+        CustomUser,
+        on_delete=models.CASCADE,
+        related_name="video_urls"
+    )
+    url = models.URLField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return f"{self.user.email} - {self.url}"

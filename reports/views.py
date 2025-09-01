@@ -8,11 +8,12 @@ from utils.helpers import get_file_hash
 from rest_framework import status
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
-from reports.models import AthleteReport
 from django.db.models import Q
 from users.models import CustomUser
 from athleteai.permissions import BlockSuperUserPermission
 
+from reports.models import AthleteReport, VideoUrl
+from reports.serializers import VideoUrlSerializer
 
 class UploadExcelFileView(APIView):
     parser_classes = [MultiPartParser]
@@ -248,3 +249,20 @@ class DeleteUserFileView(APIView):
             "s3_results": s3_results
         }, status=200)
 
+
+class UploadVideoUrlView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    def post(self, request):
+        serializer = VideoUrlSerializer(data=request.data)
+        if serializer.is_valid():
+            video_url = serializer.validated_data['video_url']
+
+            # Save in DB tied to the logged-in user
+            VideoUrl.objects.create(user=request.user, url=video_url)
+
+            return Response(
+                {"message": "Video URL saved successfully", "video_url": video_url},
+                status=status.HTTP_201_CREATED
+            )
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
