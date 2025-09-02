@@ -165,7 +165,7 @@ class ListUserReportsView(APIView):
         operation_description=(
             "Admins can view all athlete reports and their own reports; "
             "athletes can view only their own. Superusers are not allowed.\n\n"
-            "Each report includes `video_urls` for the same user."
+            "Response is grouped by user: each user has `reports` and `video_urls`."
         ),
         manual_parameters=[
             openapi.Parameter(
@@ -176,30 +176,43 @@ class ListUserReportsView(APIView):
                 required=False
             ),
         ],
-        responses={
-            200: openapi.Response(description="List of reports (each with that user's video URLs)"),
-            403: "Forbidden",
-            500: "Failed to fetch report list",
-        }
+        responses={200: "Users with reports and video URLs", 403: "Forbidden", 500: "Server error"}
     )
     def get(self, request):
         try:
             user = request.user
 
-            # ----- Reports visibility rules
+            # --- visibility
             if user.role == 'admin':
                 reports_qs = (
                     AthleteReport.objects
                     .filter(Q(user__role='athlete') | Q(user=user))
                     .exclude(~Q(user=user) & Q(user__role='admin'))
                 )
-            else:  # athlete
+            else:
                 reports_qs = AthleteReport.objects.filter(user=user)
 
             reports_qs = reports_qs.select_related("user").order_by('-uploaded_at')
 
-            # ----- Build one query for all relevant users' videos, then map by user_id
-            user_ids = list(set(reports_qs.values_list('user_id', flat=True)))
+            # --- group reports by user_id
+            reports_by_user = defaultdict(list)
+            user_meta = {}  # user_id -> {"user_id": ..., "email": ...}
+            for r in reports_qs:
+                user_meta[r.user_id] = {"user_id": r.user_id, "email": r.user.email}
+                reports_by_user[r.user_id].append({
+                    "id": r.id,
+                    "filename": r.filename,
+                    "uploaded_at": r.uploaded_at,
+                    "file_size_mb": r.file_size_mb,
+                    "pdf_data": r.pdf_data,
+                })
+
+            # if no reports, return empty (and avoid extra video query)
+            if not reports_by_user:
+                return Response([], status=status.HTTP_200_OK)
+
+            # --- fetch videos for just those users (one query), optional filter
+            user_ids = list(reports_by_user.keys())
             videos_qs = VideoUrl.objects.filter(user_id__in=user_ids).order_by("-created_at")
 
             q = request.query_params.get("q")
@@ -214,29 +227,26 @@ class ListUserReportsView(APIView):
                     "created_at": v.created_at,
                 })
 
-            # ----- Serialize reports, inlining that user's video URLs
-            reports = [
-                {
-                    "id": r.id,
-                    "uploaded_by": r.user.email,
-                    "user_id": r.user_id,
-                    "filename": r.filename,
-                    "uploaded_at": r.uploaded_at,
-                    "file_size_mb": r.file_size_mb,
-                    "pdf_data": r.pdf_data,
-                    "video_urls": videos_by_user.get(r.user_id, []),  # << inline here
-                }
-                for r in reports_qs
-            ]
+            # --- merge: one object per user
+            users_payload = []
+            for uid, meta in user_meta.items():
+                users_payload.append({
+                    "user_id": meta["user_id"],
+                    "email": meta["email"],
+                    "reports": reports_by_user.get(uid, []),
+                    "video_urls": videos_by_user.get(uid, []),
+                })
 
-            return Response(reports, status=status.HTTP_200_OK)
+            # optional: sort users by email (or by most recent report)
+            users_payload.sort(key=lambda x: x["email"].lower())
+
+            return Response(users_payload, status=status.HTTP_200_OK)
 
         except Exception as e:
-            print(f"List report error: {e}")
-            return Response(
-                {"error": "Failed to fetch report list."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            print("ListUserReportsView error:", e)
+            return Response({"error": "Failed to fetch report list."},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 
 
 class DeleteUserFileView(APIView):
