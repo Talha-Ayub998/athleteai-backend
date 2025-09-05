@@ -14,6 +14,7 @@ from athleteai.permissions import BlockSuperUserPermission
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.generics import ListAPIView
 from collections import defaultdict
+import re
 
 from reports.models import AthleteReport, VideoUrl
 from reports.serializers import VideoUrlSerializer, VideoUrlReadSerializer
@@ -337,3 +338,227 @@ class ListUserVideoUrlsView(ListAPIView):
         if q:
             qs = qs.filter(Q(url__icontains=q))
         return qs
+
+# views.py
+import re
+from collections import defaultdict
+from datetime import datetime
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from drf_yasg import openapi
+from drf_yasg.utils import swagger_auto_schema
+from django.db.models import Q
+
+# from .models import AthleteReport
+# from .permissions import BlockSuperUserPermission
+# from rest_framework.permissions import IsAuthenticated
+
+class ReportKPIsView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    @swagger_auto_schema(
+        operation_description=(
+            "Return 5 KPI cards + a bar chart (points scored vs conceded) "
+            "aggregated across ALL reports for a target user. "
+            "Athletes get their own data; admins can pass user_id."
+        ),
+        manual_parameters=[
+            openapi.Parameter(
+                name="user_id",
+                in_=openapi.IN_QUERY,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+                description="Admin-only: athlete user_id to aggregate. Athletes ignore this and get their own."
+            ),
+        ],
+        responses={200: "KPIs payload", 403: "Forbidden"}
+    )
+    def get(self, request):
+        try:
+            auth_user = request.user
+            q_user_id = request.query_params.get("user_id")
+
+            # ----- visibility
+            if auth_user.role == "athlete":
+                target_user_id = auth_user.id
+            else:  # admin
+                if not q_user_id:
+                    return Response(
+                        {"detail": "user_id is required for admins."},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                target_user_id = int(q_user_id)
+
+            # ----- fetch all reports for target user
+            reports_qs = (
+                AthleteReport.objects
+                .filter(user_id=target_user_id)
+                .select_related("user")
+                .order_by("-uploaded_at")
+            )
+            if not reports_qs.exists():
+                return Response({"detail": "No reports found."}, status=status.HTTP_200_OK)
+
+            payload = self._build_kpis_aggregated(reports_qs)
+            return Response(payload, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    # ---------------------------
+    # Aggregation & parsing utils
+    # ---------------------------
+    def _build_kpis_aggregated(self, reports_qs):
+        total_matches = wins = losses = 0
+        offense_succ_vals, defense_succ_vals = [], []
+
+        labels, my_points, opp_points = [], [], []
+        points_rows_count = 0
+        match_type_badges = set()
+
+        offense_attempts_sum = defaultdict(int)
+        defense_attempts_sum = defaultdict(int)
+
+        for r in reports_qs:
+            d = r.pdf_data or {}
+            for mt in d.get("match_types", []) or []:
+                match_type_badges.add(mt)
+
+            wl = d.get("win/loss_ratio") or []
+            if len(wl) >= 3:
+                total_matches += self._extract_first_int(wl[0])
+                wins += self._extract_first_int(wl[1])
+                losses += self._extract_first_int(wl[2])
+
+            subs = d.get("submissions") or []
+            offense_succ_vals.append(self._extract_percent_by_key(subs, "Offensive Submission Success Ratio"))
+            defense_succ_vals.append(self._extract_percent_by_key(subs, "Defensive Submission Success Ratio"))
+
+            for row in d.get("points", []) or []:
+                parsed = self._parse_points_row(row)
+                if parsed:
+                    match_label, mine, opp = parsed
+                    labels.append(match_label)
+                    my_points.append(mine)
+                    opp_points.append(opp)
+                    points_rows_count += 1
+
+            graph = d.get("graph_data") or {}
+            self._accumulate_attempts(graph.get("offense_attempts"), offense_attempts_sum)
+            self._accumulate_attempts(graph.get("defense_attempts"), defense_attempts_sum)
+
+        # --- derived KPIs
+        win_rate = (wins / total_matches) if total_matches else None
+        offensive_submission_success = self._avg_clean(offense_succ_vals)
+        defensive_submission_success = self._avg_clean(defense_succ_vals)
+
+        denom = points_rows_count if points_rows_count else None
+        avg_points_per_match = (sum(my_points) / denom) if denom else None
+        partial_points = (denom is not None and total_matches and denom != total_matches)
+
+        top_offensive_move = self._top_move_from_map(offense_attempts_sum)
+        top_defensive_threat = self._top_move_from_map(defense_attempts_sum)
+
+        return {
+            "user_id": reports_qs[0].user_id,
+            "user_email": reports_qs[0].user.email,
+            "matches_total": total_matches,
+            "wins": wins,
+            "losses": losses,
+            "kpis": {
+                # "win_rate": win_rate,
+                "win_rate_pct": self._format_pct(win_rate),
+
+                # "offensive_submission_success": offensive_submission_success,
+                "offensive_submission_success_pct": self._format_pct(offensive_submission_success),
+
+                # "defensive_submission_success": defensive_submission_success,
+                "defensive_submission_success_pct": self._format_pct(defensive_submission_success),
+
+                "avg_points_per_match": avg_points_per_match,
+                # "avg_points_per_match_pct": self._format_pct(avg_points_per_match),  # optional, might not make sense as %
+                
+                "top_moves": {
+                    "top_offensive_move": top_offensive_move,
+                    "top_defensive_threat": top_defensive_threat
+                }
+            },
+            "chart": {
+                "points_bar": {
+                    "labels": labels,
+                    "my_points": my_points,
+                    "opp_points": opp_points,
+                    "partial_points": partial_points
+                }
+            },
+            "badges": sorted(match_type_badges),
+        }
+
+
+    # ---- helpers
+    def _extract_first_int(self, text, default=0):
+        m = re.search(r"\d+", str(text))
+        return int(m.group(0)) if m else default
+
+    def _extract_percent_by_key(self, lines, key):
+        """
+        Finds a line containing 'key' and returns a float ratio (e.g., '25.76%' -> 0.2576).
+        """
+        for line in lines:
+            if key in str(line):
+                m = re.search(r"([\d.]+)\s*%", str(line))
+                if m:
+                    return float(m.group(1)) / 100.0
+        return None
+
+    def _parse_points_row(self, row):
+        """
+        Parses: "Match-9 - 9.0 – 0.0 Points" or returns None if 'Not Applicable'.
+        Handles hyphen/en-dash variants.
+        """
+        if "Not Applicable" in str(row):
+            return None
+        # accept "Match-9" or "Match-12" labels
+        m = re.search(
+            r"(Match-?\s*\d+).*?(\d+(?:\.\d+)?)\s*[–-]\s*(\d+(?:\.\d+)?)",
+            str(row)
+        )
+        if not m:
+            return None
+        label = re.sub(r"\s+", "", m.group(1)).replace("Match", "Match-")  # normalize "Match 9" -> "Match-9"
+        mine = float(m.group(2))
+        opp = float(m.group(3))
+        return (label, mine, opp)
+
+    def _accumulate_attempts(self, block, bucket: dict):
+        """
+        block = {"labels": [...], "values": [...]}
+        Sums attempts by label across reports.
+        """
+        if not block:
+            return
+        labels = block.get("labels") or []
+        values = block.get("values") or []
+        for i, lbl in enumerate(labels):
+            try:
+                bucket[lbl] += int(values[i])
+            except Exception:
+                # skip malformed rows
+                continue
+
+    def _top_move_from_map(self, mp: dict):
+        if not mp:
+            return None
+        label, attempts = max(mp.items(), key=lambda kv: kv[1])
+        return f"{label} ({attempts} attempts)"
+
+    def _avg_clean(self, arr):
+        vals = [v for v in arr if isinstance(v, (int, float))]
+        return (sum(vals) / len(vals)) if vals else None
+    
+    def _format_pct(self, value, digits=2):
+        if value is None:
+            return None
+        return f"{round(value * 100, digits):.{digits}f}%"
+

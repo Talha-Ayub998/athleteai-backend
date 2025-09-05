@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import UploadExcelFileView, ListUserReportsView, \
                     DeleteUserFileView, UploadVideoUrlView, \
-                    ListUserVideoUrlsView
+                    ListUserVideoUrlsView, ReportKPIsView
 
 urlpatterns = [
     path('upload/', UploadExcelFileView.as_view(), name='upload-excel'),
@@ -9,4 +9,5 @@ urlpatterns = [
     path('delete/', DeleteUserFileView.as_view(), name='delete-user-file'),
     path('video-url/', UploadVideoUrlView.as_view(), name='upload-video-url'),
     path('my-video-urls/', ListUserVideoUrlsView.as_view(), name='list-video-urls'),
+    path('kpis/', ReportKPIsView.as_view(), name='report-kpis"'),
 ]
