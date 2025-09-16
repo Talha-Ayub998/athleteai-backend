@@ -350,16 +350,12 @@ from drf_yasg import openapi
 from drf_yasg.utils import swagger_auto_schema
 from django.db.models import Q
 
-# from .models import AthleteReport
-# from .permissions import BlockSuperUserPermission
-# from rest_framework.permissions import IsAuthenticated
-
 class ReportKPIsView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
     @swagger_auto_schema(
         operation_description=(
-            "Return 5 KPI cards + a bar chart (points scored vs conceded) "
+            "Return 5 KPI cards + bar chart (offensive threats only) "
             "aggregated across ALL reports for a target user. "
             "Athletes get their own data; admins can pass user_id."
         ),
@@ -413,52 +409,81 @@ class ReportKPIsView(APIView):
         total_matches = wins = losses = 0
         offense_succ_vals, defense_succ_vals = [], []
 
-        labels, my_points, opp_points = [], [], []
-        points_rows_count = 0
-        match_type_badges = set()
-
         offense_attempts_sum = defaultdict(int)
         defense_attempts_sum = defaultdict(int)
 
+        # Offensive Threats aggregation (kept)
+        offense_threats_sum = defaultdict(int)
+        total_offense_threats = 0
+
+        # NEW: aggregate win-method across all reports
+        agg_win_counts = {"Submission": 0, "Points": 0, "Decision": 0}
+
         for r in reports_qs:
             d = r.pdf_data or {}
-            for mt in d.get("match_types", []) or []:
-                match_type_badges.add(mt)
 
+            # --- win/loss totals (unchanged)
             wl = d.get("win/loss_ratio") or []
             if len(wl) >= 3:
                 total_matches += self._extract_first_int(wl[0])
                 wins += self._extract_first_int(wl[1])
                 losses += self._extract_first_int(wl[2])
 
+            # --- submission success ratios (unchanged)
             subs = d.get("submissions") or []
             offense_succ_vals.append(self._extract_percent_by_key(subs, "Offensive Submission Success Ratio"))
             defense_succ_vals.append(self._extract_percent_by_key(subs, "Defensive Submission Success Ratio"))
 
-            for row in d.get("points", []) or []:
-                parsed = self._parse_points_row(row)
-                if parsed:
-                    match_label, mine, opp = parsed
-                    labels.append(match_label)
-                    my_points.append(mine)
-                    opp_points.append(opp)
-                    points_rows_count += 1
+            # --- offensive threats parsing (kept)
+            move_counts, subtotal = self._parse_move_counts_from_submissions(subs, keyword="Offensive Threats")
+            total_offense_threats += subtotal
+            for mv, ct in move_counts.items():
+                offense_threats_sum[mv] += ct
 
+            # --- graph attempts (kept)
             graph = d.get("graph_data") or {}
             self._accumulate_attempts(graph.get("offense_attempts"), offense_attempts_sum)
             self._accumulate_attempts(graph.get("defense_attempts"), defense_attempts_sum)
 
-        # --- derived KPIs
+            # --- NEW: aggregate win_method from pdf_data
+            # supports either:
+            #   "win_method": {"Submission": X, "Points": Y, "Decision": Z, "TotalWins": T}
+            # or legacy:
+            #   "win_method_distribution": {"counts": {...}}
+            win_method = d.get("win_method")
+            if not win_method:
+                wmd = d.get("win_method_distribution") or {}
+                win_method = (wmd.get("counts") if isinstance(wmd, dict) else None)
+
+            if isinstance(win_method, dict):
+                for k in ("Submission", "Points", "Decision"):
+                    try:
+                        agg_win_counts[k] += int(win_method.get(k, 0))
+                    except Exception:
+                        # ignore non-int noise
+                        pass
+
+        # --- derived KPIs (unchanged)
         win_rate = (wins / total_matches) if total_matches else None
         offensive_submission_success = self._avg_clean(offense_succ_vals)
         defensive_submission_success = self._avg_clean(defense_succ_vals)
 
-        denom = points_rows_count if points_rows_count else None
-        avg_points_per_match = (sum(my_points) / denom) if denom else None
-        partial_points = (denom is not None and total_matches and denom != total_matches)
-
         top_offensive_move = self._top_move_from_map(offense_attempts_sum)
         top_defensive_threat = self._top_move_from_map(defense_attempts_sum)
+
+        # --- NEW: compute distribution percentages
+        total_wins = sum(agg_win_counts.values())
+        if total_wins:
+            perc_submission = round(agg_win_counts["Submission"] * 100.0 / total_wins, 1)
+            perc_points     = round(agg_win_counts["Points"] * 100.0 / total_wins, 1)
+            perc_decision   = round(agg_win_counts["Decision"] * 100.0 / total_wins, 1)
+        else:
+            perc_submission = perc_points = perc_decision = 0.0
+
+        # --- Offensive Threats chart (kept)
+        offense_sorted = sorted(offense_threats_sum.items(), key=lambda x: (-x[1], x[0]))
+        offense_labels = [name for name, _ in offense_sorted]
+        offense_counts = [cnt for _, cnt in offense_sorted]
 
         return {
             "user_id": reports_qs[0].user_id,
@@ -467,34 +492,78 @@ class ReportKPIsView(APIView):
             "wins": wins,
             "losses": losses,
             "kpis": {
-                # "win_rate": win_rate,
                 "win_rate_pct": self._format_pct(win_rate),
-
-                # "offensive_submission_success": offensive_submission_success,
                 "offensive_submission_success_pct": self._format_pct(offensive_submission_success),
-
-                # "defensive_submission_success": defensive_submission_success,
                 "defensive_submission_success_pct": self._format_pct(defensive_submission_success),
-
-                "avg_points_per_match": avg_points_per_match,
-                # "avg_points_per_match_pct": self._format_pct(avg_points_per_match),  # optional, might not make sense as %
-                
                 "top_moves": {
                     "top_offensive_move": top_offensive_move,
                     "top_defensive_threat": top_defensive_threat
                 }
             },
             "chart": {
-                "points_bar": {
-                    "labels": labels,
-                    "my_points": my_points,
-                    "opp_points": opp_points,
-                    "partial_points": partial_points
+                "offense_threats_bar": {
+                    "labels": offense_labels,
+                    "counts": offense_counts,
+                    "total_threats": total_offense_threats
+                },
+                # NEW: percentages of all three from all matches
+                "win_method_distribution": {
+                    "labels": ["Submission", "Points", "Decision"],
+                    "counts": [
+                        agg_win_counts["Submission"],
+                        agg_win_counts["Points"],
+                        agg_win_counts["Decision"]
+                    ],
+                    "percents": [perc_submission, perc_points, perc_decision],
+                    "total_wins": total_wins
                 }
-            },
-            "badges": sorted(match_type_badges),
+            }
         }
 
+    # ---------------------------
+    # Helpers
+    # ---------------------------
+    def _parse_move_counts_from_submissions(self, submissions, keyword="Offensive Threats"):
+        if not submissions:
+            return {}, 0
+
+        line = next((s for s in submissions if s and keyword in s), None)
+        if not line:
+            return {}, 0
+
+        parts = re.split(r"\s+[–—-]\s+", line, maxsplit=1)
+        if len(parts) < 2:
+            return {}, 0
+
+        left, right = parts[0], parts[1]
+        total = self._extract_first_int(left) or 0
+
+        counts = defaultdict(int)
+        for chunk in right.split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            m = re.match(r"(.+?)\s*x\s*(\d+)\s*$", chunk, flags=re.IGNORECASE)
+            if not m:
+                continue
+            raw_name = m.group(1).strip()
+            n = int(m.group(2))
+            name = self._normalize_move_name(raw_name)
+            counts[name] += n
+
+        return dict(counts), total
+
+    def _normalize_move_name(self, name: str) -> str:
+        mapping = {
+            "Arm Bar": "Armbar",
+            "Arm-Bar": "Armbar",
+            "RNC": "Rear-Naked Choke",
+            "Rear Naked Choke": "Rear-Naked Choke",
+            "Straight Ankle Lock": "Ankle Lock",
+            "Straight-Ankle Lock": "Ankle Lock",
+            "Guillotine Choke": "Guillotine",
+        }
+        return mapping.get(name.strip(), name.strip())
 
     # ---- helpers
     def _extract_first_int(self, text, default=0):

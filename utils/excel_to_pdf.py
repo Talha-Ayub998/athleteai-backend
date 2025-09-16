@@ -1,4 +1,3 @@
-import boto3
 import random
 import openai
 import logging
@@ -7,9 +6,9 @@ import json
 import pandas as pd
 import os
 import boto3
-import pandas as pd
 from io import StringIO
 import re
+import numpy as np
 # =========================
 # 🔧 Configuration
 # =========================
@@ -649,7 +648,7 @@ def generate_summary(stats_df, results_df, name, language):
 # =========================
 # 🧾 Main PDF Data Builder
 # =========================
-def build_pdf_dict(name, language, stats_df, results_df, moves_df, grouped_df, summary_text, json_data):
+def build_pdf_dict(name, language, stats_df, results_df, moves_df, grouped_df, summary_text, win_method, json_data):
     submission_summary = calculate_submissions_summary(results_df, moves_df, stats_df)
     match_stats = calculate_match_statistics(stats_df, moves_df, results_df)
 
@@ -682,6 +681,7 @@ def build_pdf_dict(name, language, stats_df, results_df, moves_df, grouped_df, s
         "submissions": submission_summary,
         "match_types": [f"{v} {k}" for k, v in calculate_match_type_statistics(results_df).items()],
         "win/loss_ratio": summary_lines,
+        "win_method": win_method,
         "points": match_stats.get("points_details"),
         "offensive_analysis": {
             "successful": analyze_most_successful_categorization(grouped_df)[0],
@@ -837,6 +837,158 @@ def validate_match_outcomes(stats_df, moves_df, results_df, context):
             context["has_errors"] = True
 
 
+def _first_col(df, candidates):
+    """
+    Robust column picker: tries exact match on a normalized name,
+    then falls back to prefix/contains.
+    """
+    # normalize all DataFrame columns
+    norm_map = {re.sub(r'[^a-z0-9]+', ' ', c.lower()).strip(): c for c in df.columns}
+    cands = [re.sub(r'[^a-z0-9]+', ' ', x.lower()).strip() for x in candidates]
+
+    # exact
+    for cand in cands:
+        if cand in norm_map:
+            return norm_map[cand]
+
+    # startswith / contains
+    for cand in cands:
+        for norm, original in norm_map.items():
+            if norm.startswith(cand) or cand in norm:
+                return original
+
+    return None
+
+
+def _norm_series(s):
+    return s.astype(str).str.strip().str.lower()
+
+
+# --- submission move dictionary (from moves_df) ------------------------------
+def _submission_moves_from_lookup(moves_df):
+    moves_df = moves_df.rename(columns={'Categorization': 'categorization'})
+    cat_col  = _first_col(moves_df, ["categorization", "category", "type"])
+    name_col = _first_col(moves_df, ["move_name", "move", "name", "technique"])
+    if not (cat_col and name_col):
+        raise ValueError(f"Could not locate required cols. Have: {list(moves_df.columns)}")
+
+    # filter only submission rows
+    is_sub = moves_df[cat_col].astype(str).str.strip().str.lower().eq("submission")
+    raw_names = moves_df.loc[is_sub, name_col].dropna().astype(str)
+
+    # return exactly as in CSV (lowercased + stripped, but no collapsing)
+    return [n.strip().lower() for n in raw_names]
+
+
+# --- does the match have a successful offensive submission? ------------------
+
+
+def _has_successful_offensive_submission(stats_df_match, submission_moves):
+    move_col     = _first_col(stats_df_match, ["move_name", "Move", "Technique", "Action", "Move Name"])
+    type_col     = _first_col(stats_df_match, ["Type", "Side", "Phase", "Attack/Defense"])
+    success_col  = _first_col(stats_df_match, ["offense_succeeded", "Offense Succeeded", "Offense Success", "Succeeded", "Success"])
+    result_col   = _first_col(stats_df_match, ["Result", "Outcome", "Status", "Finish", "End Result"])
+    if not move_col:
+        return False
+
+    df = stats_df_match.copy()
+
+    # restrict to offense rows if we can
+    if type_col is not None:
+        df = df[_norm_series(df[type_col]).isin(["offense", "offensive", "attack"])]
+
+    if success_col is not None:
+        vals = pd.to_numeric(df[success_col], errors="coerce")
+        df = df[np.isfinite(vals) & (vals > 0)]
+    elif result_col is not None:
+        finish_tokens = {"finish", "finished", "submission", "submitted", "subbed", "tap", "tapped", "tapout"}
+        df = df[_norm_series(df[result_col]).apply(lambda x: any(tok in x for tok in finish_tokens))]
+    else:
+        return False
+
+    if df.empty:
+        return False
+
+    moves = _norm_series(df[move_col]).str.replace(r"\s+", " ", regex=True)
+    return moves.isin(submission_moves).any()
+
+
+def _has_offensive_points(stats_df_match, moves_df):
+    move_col    = _first_col(stats_df_match, ["move_name", "Move", "Technique", "Action", "Move Name"])
+    success_col = _first_col(stats_df_match, ["offense_succeeded", "Offense Succeeded", "Succeeded", "Success"])
+    if not (move_col and success_col):
+        return False
+
+    df = stats_df_match.copy()
+    succ = pd.to_numeric(df[success_col], errors="coerce")
+    df = df[np.isfinite(succ) & (succ > 0)]
+    if df.empty:
+        return False
+
+    # prepare lookup
+    mcol_lookup = _first_col(moves_df, ["move_name", "move", "name", "technique"])
+    points_col  = _first_col(moves_df, ["points", "Points"])
+    if not (mcol_lookup and points_col):
+        return False
+
+    left = _norm_series(df[move_col]).str.replace(r"\s+", " ", regex=True).to_frame("move_name")
+    right = moves_df.rename(columns={mcol_lookup: "move_name"}).copy()
+    right["move_name"] = _norm_series(right["move_name"]).str.replace(r"\s+", " ", regex=True)
+
+    merged = left.merge(right[["move_name", points_col]], on="move_name", how="left")
+    pts = pd.to_numeric(merged[points_col], errors="coerce")
+    return (np.isfinite(pts) & (pts > 0)).any()
+
+
+
+
+# --- compute distribution for one workbook -----------------------------------
+def compute_win_method_distribution(stats_df, results_df, moves_df):
+    submission_moves = set(_submission_moves_from_lookup(moves_df))
+
+    match_col     = _first_col(results_df, ["match"])
+    wl_col        = _first_col(results_df, ["W/L", "Win/Loss", "Outcome", "Result"])
+    ref_dec_col   = _first_col(results_df, ["Referee Decision", "Ref Decision", "Decision By Referee"])
+
+    if not match_col or not wl_col:
+        return {"counts": {"Submission": 0, "Points": 0, "Decision": 0, "TotalWins": 0},
+                "percents": {"Submission": 0.0, "Points": 0.0, "Decision": 0.0}}
+
+    res = results_df.copy()
+    wins_mask = _norm_series(res[wl_col]).isin(["w", "win"])
+    res = res.loc[wins_mask]
+
+    counts = {"Submission": 0, "Points": 0, "Decision": 0}
+
+    for _, row in res.iterrows():
+        match_id  = row[match_col]
+        ref_dec   = (str(row[ref_dec_col]).strip().lower() if ref_dec_col else "")
+
+        stats_match = stats_df[stats_df[match_col] == match_id]
+
+        # --- 1) Submission takes precedence
+        finished_sub = _has_successful_offensive_submission(stats_match, submission_moves)
+        if finished_sub:
+            counts["Submission"] += 1
+            continue
+
+        # --- 2) Explicit referee decision
+        if ref_dec in {"yes", "y", "true", "t", "1"}:
+            counts["Decision"] += 1
+            continue
+
+        # --- 3) Points (ruleset or inferred from stats)
+        if _has_offensive_points(stats_match, moves_df):
+            counts["Points"] += 1
+            continue
+
+        # --- 4) Fallback per client rule: treat as Points
+        counts["Points"] += 1
+
+    total = sum(counts.values()) or 0
+    return {**counts, "TotalWins": total}
+
+
 def read_csv_from_s3(bucket_name, key):
     s3 = boto3.client('s3')
     response = s3.get_object(Bucket=bucket_name, Key=key)
@@ -864,6 +1016,8 @@ def process_excel_file(ATHLETE_FILE):
     # 📊 Step 1: Load data from Excel and CSV
     athlete_name, athlete_language, stats_df, results_df, moves_df = load_data(moves_df, xls, athlete_sheet)
     matches_data = {"Stats": stats_df, "Results": results_df}
+    
+    win_method = compute_win_method_distribution(stats_df, results_df, moves_df)
 
     # ✅ Step 2: Run all validation checks
     check_missing_sheets(xls, context)
@@ -901,6 +1055,7 @@ def process_excel_file(ATHLETE_FILE):
         moves_df=moves_df,
         grouped_df=grouped_df,
         summary_text=summary_text,
+        win_method=win_method,
         json_data=json_data
     )
 
