@@ -1,8 +1,7 @@
 # users/admin.py
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import CustomUser, Subscription, ReportPurchase
-
+from .models import CustomUser, Subscription, ReportPurchase, ContactMessage
 
 class SubscriptionInline(admin.StackedInline):
     model = Subscription
@@ -58,3 +57,17 @@ class ReportPurchaseAdmin(admin.ModelAdmin):
     list_filter = ("created_at",)
     search_fields = ("user__email", "stripe_payment_intent")
     readonly_fields = ("stripe_payment_intent", "amount", "created_at")
+
+@admin.register(ContactMessage)
+class ContactMessageAdmin(admin.ModelAdmin):
+    list_display = ("id", "name", "email", "short_description", "created_at")
+    list_display_links = ("id", "name")
+    search_fields = ("name", "email", "description")
+    list_filter = ("created_at",)
+    readonly_fields = ("created_at",)
+    ordering = ("-created_at",)
+
+    def short_description(self, obj):
+        # show a preview in the changelist
+        return (obj.description[:60] + "…") if len(obj.description) > 60 else obj.description
+    short_description.short_description = "Description"
