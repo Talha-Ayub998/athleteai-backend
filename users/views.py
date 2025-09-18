@@ -29,7 +29,8 @@ from .serializers import (
     LogoutSerializer,
     UserSerializer,
     UserListSerializer,
-    CurrentSubscriptionSerializer
+    CurrentSubscriptionSerializer,
+    ContactMessageSerializer
 )
 from .stripe_prices import STRIPE_PRICES
 from .stripe_utils import get_price_id
@@ -195,6 +196,29 @@ class LoginView(APIView):
                 "refresh": tokens["refresh"]
             })
         return Response(serializer.errors, status=400)
+
+class ContactUsView(APIView):
+    permission_classes = [AllowAny]
+
+    @swagger_auto_schema(
+        request_body=ContactMessageSerializer,
+        responses={
+            201: openapi.Response("Message created successfully"),
+            400: "Invalid input",
+            500: "Server error",
+        },
+        operation_description="Submit a contact form (name, email, description).",
+    )
+    def post(self, request):
+        serializer = ContactMessageSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                {"message": "Contact message submitted successfully."},
+                status=201
+            )
+        return Response(serializer.errors, status=400)
+
 
 class LogoutView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]

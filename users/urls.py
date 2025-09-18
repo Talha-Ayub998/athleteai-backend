@@ -3,11 +3,12 @@ from .views import RegisterView, LoginView, \
                     LogoutView, CustomTokenRefreshView, \
                     CreateCheckoutSessionView, ListUsersView,\
                     CurrentUserView, CancelSubscriptionView,\
-                    CurrentSubscriptionView
+                    CurrentSubscriptionView, ContactUsView
 from users.webhooks import *
 
 urlpatterns = [
     path('register/', RegisterView.as_view(), name='register'),
+    path("contact-us/", ContactUsView.as_view(), name="contact-us"),
     path('user-list/', ListUsersView.as_view(), name='user-list'),
     path('me/', CurrentUserView.as_view(), name='current-user'),
     path('login/', LoginView.as_view(), name='login'),

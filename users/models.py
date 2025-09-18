@@ -84,3 +84,13 @@ class ReportPurchase(models.Model):
     amount = models.IntegerField()  # in cents
     created_at = models.DateTimeField(auto_now_add=True)
     # optionally store a usage/entitlement flag (e.g., downloads remaining)
+
+class ContactMessage(models.Model):
+    name = models.CharField(max_length=150)
+    email = models.EmailField()
+    description = models.TextField()
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.name} <{self.email}>"

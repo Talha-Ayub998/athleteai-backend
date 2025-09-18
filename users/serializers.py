@@ -5,7 +5,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.password_validation import validate_password as django_validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 
-from .models import CustomUser
+from .models import CustomUser, ContactMessage
 
 def custom_validate_password(password):
     try:
@@ -92,3 +92,8 @@ class CurrentSubscriptionSerializer(serializers.Serializer):
     stripe_subscription_id = serializers.CharField(allow_null=True)
     # optional: expose remaining one-time report credits if you implemented it
     remaining_report_credits = serializers.IntegerField(required=False)
+
+class ContactMessageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ContactMessage
+        fields = ["id", "name", "email", "description", "created_at"]
