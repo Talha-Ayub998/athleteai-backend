@@ -3,13 +3,12 @@ from __future__ import annotations
 
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 import stripe
 from django.db import transaction
 from django.http import HttpResponse
 from django.shortcuts import render
-from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from users.models import CustomUser, Subscription, ReportPurchase
