@@ -93,8 +93,8 @@ class RegisterView(APIView):
                     sub.save(update_fields=["stripe_customer_id"])
 
                 # Use your current Django success/cancel routes (keeps present flow)
-                success_url = 'https://54.215.71.202.nip.io/api/users/success/?session_id={CHECKOUT_SESSION_ID}'
-                cancel_url  = 'https://54.215.71.202.nip.io/api/users/cancel/'
+                success_url = 'https://portal.substats.app/api/users/success/?session_id={CHECKOUT_SESSION_ID}'
+                cancel_url  = 'https://portal.substats.app/api/users/cancel/'
 
                 if flow_type == "subscription":
                     if plan not in ("essentials", "precision"):
@@ -295,31 +295,18 @@ import uuid
 class CreateCheckoutSessionView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
-    @swagger_auto_schema(...)
+    @swagger_auto_schema(...)  # keep your swagger config
     def post(self, request):
         user = request.user
-        # ✅ normalize inputs
         flow_type = (request.data.get("type") or "").strip().lower()
         plan      = (request.data.get("plan") or "").strip().lower()
-        interval  = (request.data.get("interval") or "").strip().lower()  # only for subscriptions
+        interval  = (request.data.get("interval") or "").strip().lower()  # "month" | "year"
 
-        # Free plan (no Stripe call)
-        if flow_type == "free" or plan == "free":
-            sub, _ = Subscription.objects.get_or_create(user=user)
-            sub.plan = "free"
-            sub.interval = None
-            sub.cancel_at_period_end = False
-            stamp_free_trial(sub)  # set trialing + trial_start/end + window
-            sub.stripe_subscription_id = None
-            sub.save(update_fields=[
-                "plan","interval","status","trial_start","trial_end",
-                "current_period_start","current_period_end","period_usage",
-                "cancel_at_period_end","stripe_subscription_id"
-            ])
-            return Response({"detail": "Free plan activated"}, status=status.HTTP_200_OK)
+        success_url = 'https://portal.substats.app/api/users/success/?session_id={CHECKOUT_SESSION_ID}'
+        cancel_url  = 'https://portal.substats.app/api/users/cancel/'
+        return_url  = 'https://portal.substats.app/plans'   # where to return from Billing Portal
 
-
-        # Ensure Stripe customer
+        # Ensure a Stripe customer exists
         sub, _ = Subscription.objects.get_or_create(user=user)
         if sub.stripe_customer_id:
             customer_id = sub.stripe_customer_id
@@ -329,21 +316,45 @@ class CreateCheckoutSessionView(APIView):
             sub.stripe_customer_id = customer_id
             sub.save(update_fields=["stripe_customer_id"])
 
-        success_url = 'https://54.215.71.202.nip.io/api/users/success/?session_id={CHECKOUT_SESSION_ID}'
-        cancel_url = 'https://54.215.71.202.nip.io/api/users/cancel/'
+        # -------- FREE PLAN ----------
+        if flow_type == "free" or plan == "free":
+            from users.subscription_limits import stamp_free_trial
+            sub.plan = "free"
+            sub.interval = None
+            sub.cancel_at_period_end = False
+            stamp_free_trial(sub)
+            sub.stripe_subscription_id = None
+            sub.save(update_fields=[
+                "plan","interval","status","trial_start","trial_end",
+                "current_period_start","current_period_end","period_usage",
+                "cancel_at_period_end","stripe_subscription_id"
+            ])
+            return Response({"detail": "Free plan activated"}, status=status.HTTP_200_OK)
 
-        # Subscription flow
+        # -------- SUBSCRIPTION ----------
         if flow_type == "subscription":
-            if plan not in ("essentials", "precision"):
-                return JsonResponse({"error": "Invalid plan"}, status=400)
-            if interval not in ("month", "year"):
-                return JsonResponse({"error": "Missing or invalid interval"}, status=400)
+            # If user already has a subscription, send them to Billing Portal to manage it
+            if sub.stripe_subscription_id and sub.status in ("active", "trialing", "past_due"):
+                portal = stripe.billing_portal.Session.create(
+                    customer=customer_id,
+                    return_url=return_url,
+                )
+                return Response(
+                    {"billing_portal_url": portal.url, "action": "manage_existing"},
+                    status=status.HTTP_200_OK
+                )
 
-            key = f"{plan}_{interval}"  # e.g. "essentials_month"
+            # First-time purchase: create a Checkout Session
+            if plan not in ("essentials", "precision"):
+                return Response({"error": "Invalid plan"}, status=400)
+            if interval not in ("month", "year"):
+                return Response({"error": "Missing or invalid interval"}, status=400)
+
+            key = f"{plan}_{interval}"  # e.g., "essentials_month"
             try:
-                price_id = get_price_id(key)   # 🔑 dynamic lookup
+                price_id = get_price_id(key)
             except ValueError as e:
-                return JsonResponse({"error": str(e)}, status=400)
+                return Response({"error": str(e)}, status=400)
 
             try:
                 session = stripe.checkout.Session.create(
@@ -355,19 +366,18 @@ class CreateCheckoutSessionView(APIView):
                     cancel_url=cancel_url,
                     metadata={"user_id": str(user.id), "plan": plan, "interval": interval},
                     client_reference_id=str(user.id),
-                    # ✅ prevent duplicate sessions on retry
                     idempotency_key=str(uuid.uuid4()),
                 )
-                return Response({"checkout_url": session.url}, status=status.HTTP_200_OK)
+                return Response({"checkout_url": session.url, "action": "new_subscription"}, status=200)
             except stripe.error.StripeError as e:
-                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": str(e)}, status=400)
 
-        # One-time PDF flow
+        # -------- ONE-TIME PDF ----------
         if flow_type == "one_time" and plan == "pdf_report":
             try:
                 price_id = get_price_id("pdf_report")
             except ValueError as e:
-                return JsonResponse({"error": str(e)}, status=400)
+                return Response({"error": str(e)}, status=400)
 
             try:
                 session = stripe.checkout.Session.create(
@@ -378,14 +388,13 @@ class CreateCheckoutSessionView(APIView):
                     cancel_url=cancel_url,
                     metadata={"user_id": str(user.id), "plan": plan},
                     client_reference_id=str(user.id),
-                    # ✅ prevent duplicate sessions on retry
                     idempotency_key=str(uuid.uuid4()),
                 )
-                return Response({"checkout_url": session.url}, status=status.HTTP_200_OK)
+                return Response({"checkout_url": session.url, "action": "one_time"}, status=200)
             except stripe.error.StripeError as e:
-                return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"error": str(e)}, status=400)
 
-        return Response({"error": "Invalid request"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({"error": "Invalid request"}, status=400)
 
 class CancelSubscriptionView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
@@ -479,3 +488,20 @@ class CurrentLimitsView(APIView):
             "remaining": remaining,
         }
         return Response(payload, status=200)
+
+
+# users/views.py
+class BillingPortalView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    def post(self, request):
+        user = request.user
+        sub, _ = Subscription.objects.get_or_create(user=user)
+        if not sub.stripe_customer_id:
+            return Response({"error": "No Stripe customer found."}, status=400)
+
+        portal = stripe.billing_portal.Session.create(
+            customer=sub.stripe_customer_id,
+            return_url="https://portal.substats.app/plans",
+        )
+        return Response({"billing_portal_url": portal.url}, status=200)
