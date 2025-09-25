@@ -302,27 +302,20 @@ class CreateCheckoutSessionView(APIView):
         plan      = (request.data.get("plan") or "").strip().lower()
         interval  = (request.data.get("interval") or "").strip().lower()  # "month" | "year"
 
+        # ✅ Use your real domain instead of nip.io
         success_url = 'https://portal.substats.app/api/users/success/?session_id={CHECKOUT_SESSION_ID}'
         cancel_url  = 'https://portal.substats.app/api/users/cancel/'
-        return_url  = 'https://portal.substats.app/plans'   # where to return from Billing Portal
+        return_url  = 'https://portal.substats.app/plans'
 
-        # Ensure a Stripe customer exists
+        # Ensure subscription row
         sub, _ = Subscription.objects.get_or_create(user=user)
-        if sub.stripe_customer_id:
-            customer_id = sub.stripe_customer_id
-        else:
-            customer = stripe.Customer.create(email=user.email)
-            customer_id = customer.id
-            sub.stripe_customer_id = customer_id
-            sub.save(update_fields=["stripe_customer_id"])
 
         # -------- FREE PLAN ----------
         if flow_type == "free" or plan == "free":
-            from users.subscription_limits import stamp_free_trial
             sub.plan = "free"
             sub.interval = None
             sub.cancel_at_period_end = False
-            stamp_free_trial(sub)
+            stamp_free_trial(sub)  # ✅ sets trial_start, trial_end, current_period_x, usage=0
             sub.stripe_subscription_id = None
             sub.save(update_fields=[
                 "plan","interval","status","trial_start","trial_end",
@@ -331,9 +324,18 @@ class CreateCheckoutSessionView(APIView):
             ])
             return Response({"detail": "Free plan activated"}, status=status.HTTP_200_OK)
 
+        # -------- Ensure Stripe Customer ----------
+        if sub.stripe_customer_id:
+            customer_id = sub.stripe_customer_id
+        else:
+            customer = stripe.Customer.create(email=user.email)
+            customer_id = customer.id
+            sub.stripe_customer_id = customer_id
+            sub.save(update_fields=["stripe_customer_id"])
+
         # -------- SUBSCRIPTION ----------
         if flow_type == "subscription":
-            # If user already has a subscription, send them to Billing Portal to manage it
+            # Already subscribed → Billing Portal
             if sub.stripe_subscription_id and sub.status in ("active", "trialing", "past_due"):
                 portal = stripe.billing_portal.Session.create(
                     customer=customer_id,
@@ -344,13 +346,13 @@ class CreateCheckoutSessionView(APIView):
                     status=status.HTTP_200_OK
                 )
 
-            # First-time purchase: create a Checkout Session
+            # New subscription
             if plan not in ("essentials", "precision"):
                 return Response({"error": "Invalid plan"}, status=400)
             if interval not in ("month", "year"):
                 return Response({"error": "Missing or invalid interval"}, status=400)
 
-            key = f"{plan}_{interval}"  # e.g., "essentials_month"
+            key = f"{plan}_{interval}"  # e.g. "essentials_month"
             try:
                 price_id = get_price_id(key)
             except ValueError as e:
@@ -366,7 +368,7 @@ class CreateCheckoutSessionView(APIView):
                     cancel_url=cancel_url,
                     metadata={"user_id": str(user.id), "plan": plan, "interval": interval},
                     client_reference_id=str(user.id),
-                    idempotency_key=str(uuid.uuid4()),
+                    idempotency_key=str(uuid.uuid4()),  # prevent duplicates
                 )
                 return Response({"checkout_url": session.url, "action": "new_subscription"}, status=200)
             except stripe.error.StripeError as e:
