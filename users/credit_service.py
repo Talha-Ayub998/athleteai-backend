@@ -34,8 +34,10 @@ def reserve_credit(user, units: int):
         return True, CreditTicket(source="subscription", purchase_id=None, user_id=user.id, units=units), \
                f"using subscription credits ({units})"
 
-    return False, None, f"Not enough subscription credits. Need {units}, have {remaining}. " \
-                        f"Buy a one-time PDF or upgrade your plan."
+    return False, None, (
+        f"Your upload requires {units} match credits, but you only have {remaining} left. "
+        f"Please upgrade your plan or purchase a one-time report."
+    )
 
 @transaction.atomic
 def commit_credit(ticket: CreditTicket):
