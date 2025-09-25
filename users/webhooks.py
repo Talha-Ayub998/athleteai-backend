@@ -149,7 +149,15 @@ def stripe_webhook(request):
                     sub_rec.current_period_end = datetime.fromtimestamp(cpe_unix, tz=timezone.utc)
 
                 sub_rec.cancel_at_period_end = bool(stripe_sub.get("cancel_at_period_end"))
-                sub_rec.save()
+                sub_rec.save(update_fields=[
+                    "plan",
+                    "interval",
+                    "status",
+                    "current_period_start",
+                    "current_period_end",
+                    "cancel_at_period_end",
+                    "stripe_subscription_id",
+                ])
 
             elif mode == "payment":
                 # One-time purchase (e.g., PDF report)
@@ -222,7 +230,15 @@ def stripe_webhook(request):
             sub_rec.stripe_subscription_id = None
             sub_rec.status = "canceled"
 
-        sub_rec.save()
+        sub_rec.save(update_fields=[
+            "plan",
+            "interval",
+            "status",
+            "current_period_start",
+            "current_period_end",
+            "cancel_at_period_end",
+            "stripe_subscription_id",
+        ])
         return HttpResponse(status=200)
 
     # 3) Invoice succeeded → refresh status/period end (renewals)
@@ -245,7 +261,16 @@ def stripe_webhook(request):
                         sub_rec.current_period_end = datetime.fromtimestamp(cpe, tz=timezone.utc)
 
                     sub_rec.cancel_at_period_end = bool(sub.get("cancel_at_period_end"))
-                    sub_rec.save()
+                    sub_rec.save(update_fields=[
+                        "plan",
+                        "interval",
+                        "status",
+                        "current_period_start",
+                        "current_period_end",
+                        "cancel_at_period_end",
+                        "stripe_subscription_id",
+                    ])
+
                 except Exception as e:
                     logger.exception("Failed to refresh subscription after invoice.payment_succeeded: %s", e)
         return HttpResponse(status=200)
