@@ -144,16 +144,24 @@ def stripe_webhook(request):
                 # >>> ADD start + end from Stripe <<<
                 cps_unix = stripe_sub.get("current_period_start")
                 cpe_unix = stripe_sub.get("current_period_end")
+
+                if not cps_unix or not cpe_unix:
+                    items = (stripe_sub.get("items") or {}).get("data") or []
+                    if items:
+                        cps_unix = cps_unix or items[0].get("current_period_start")
+                        cpe_unix = cpe_unix or items[0].get("current_period_end")
+
+                if cps_unix:
+                    sub_rec.current_period_start = datetime.fromtimestamp(cps_unix, tz=timezone.utc)
+                if cpe_unix:
+                    sub_rec.current_period_end = datetime.fromtimestamp(cpe_unix, tz=timezone.utc)
+
                 logger.info(
                     "Stripe period start=%s, end=%s for subscription=%s",
                     cps_unix,
                     cpe_unix,
                     stripe_sub.get("id")
                 )
-                if cps_unix:
-                    sub_rec.current_period_start = datetime.fromtimestamp(cps_unix, tz=timezone.utc)
-                if cpe_unix:
-                    sub_rec.current_period_end = datetime.fromtimestamp(cpe_unix, tz=timezone.utc)
 
                 sub_rec.cancel_at_period_end = bool(stripe_sub.get("cancel_at_period_end"))
                 sub_rec.save(update_fields=[
@@ -223,16 +231,24 @@ def stripe_webhook(request):
         # >>> ADD start + end from Stripe <<<
         cps_unix = stripe_sub.get("current_period_start")
         cpe_unix = stripe_sub.get("current_period_end")
+
+        if not cps_unix or not cpe_unix:
+            items = (stripe_sub.get("items") or {}).get("data") or []
+            if items:
+                cps_unix = cps_unix or items[0].get("current_period_start")
+                cpe_unix = cpe_unix or items[0].get("current_period_end")
+
+        if cps_unix:
+            sub_rec.current_period_start = datetime.fromtimestamp(cps_unix, tz=timezone.utc)
+        if cpe_unix:
+            sub_rec.current_period_end = datetime.fromtimestamp(cpe_unix, tz=timezone.utc)
+
         logger.info(
             "Stripe period start=%s, end=%s for subscription=%s",
             cps_unix,
             cpe_unix,
             stripe_sub.get("id")
         )
-        if cps_unix:
-            sub_rec.current_period_start = datetime.fromtimestamp(cps_unix, tz=timezone.utc)
-        if cpe_unix:
-            sub_rec.current_period_end = datetime.fromtimestamp(cpe_unix, tz=timezone.utc)
 
         sub_rec.cancel_at_period_end = bool(stripe_sub.get("cancel_at_period_end"))
 
@@ -266,18 +282,26 @@ def stripe_webhook(request):
                     sub_rec.status = sub.get("status", sub_rec.status)
 
                     # >>> ADD start + end from Stripe <<<
-                    cps = sub.get("current_period_start")
-                    cpe = sub.get("current_period_end")
+                    cps_unix = sub.get("current_period_start")
+                    cpe_unix = sub.get("current_period_end")
+
+                    if not cps_unix or not cpe_unix:
+                        items = (sub.get("items") or {}).get("data") or []
+                        if items:
+                            cps_unix = cps_unix or items[0].get("current_period_start")
+                            cpe_unix = cpe_unix or items[0].get("current_period_end")
+
+                    if cps_unix:
+                        sub_rec.current_period_start = datetime.fromtimestamp(cps_unix, tz=timezone.utc)
+                    if cpe_unix:
+                        sub_rec.current_period_end = datetime.fromtimestamp(cpe_unix, tz=timezone.utc)
+
                     logger.info(
                         "Stripe period start=%s, end=%s for subscription=%s",
                         cps_unix,
                         cpe_unix,
-                        stripe_sub.get("id")
+                        sub.get("id")
                     )
-                    if cps:
-                        sub_rec.current_period_start = datetime.fromtimestamp(cps, tz=timezone.utc)
-                    if cpe:
-                        sub_rec.current_period_end = datetime.fromtimestamp(cpe, tz=timezone.utc)
 
                     sub_rec.cancel_at_period_end = bool(sub.get("cancel_at_period_end"))
                     sub_rec.save(update_fields=[
@@ -289,6 +313,7 @@ def stripe_webhook(request):
                         "cancel_at_period_end",
                         "stripe_subscription_id",
                     ])
+
 
                 except Exception as e:
                     logger.exception("Failed to refresh subscription after invoice.payment_succeeded: %s", e)
