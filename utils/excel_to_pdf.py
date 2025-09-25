@@ -996,6 +996,11 @@ def read_csv_from_s3(bucket_name, key):
     return pd.read_csv(StringIO(content))
 
 
+def count_matches(excel_file) -> int:
+    xls = pd.ExcelFile(excel_file)           # reads sheet names only
+    match_ids = {s.split(" ")[0] for s in xls.sheet_names if "Match-" in s}
+    return len(match_ids)
+
 def process_excel_file(ATHLETE_FILE):
     context = {"has_errors": False, "errors": []}
 

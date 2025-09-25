@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from utils.s3_service import S3Service
-from utils.excel_to_pdf import process_excel_file
+from utils.excel_to_pdf import process_excel_file, count_matches
 from utils.helpers import get_file_hash
 from rest_framework import status
 from drf_yasg.utils import swagger_auto_schema
@@ -19,41 +19,48 @@ import re
 from reports.models import AthleteReport, VideoUrl
 from reports.serializers import VideoUrlSerializer, VideoUrlReadSerializer
 
+# add imports at the top of reports/views.py
+from users.credit_service import reserve_credit, commit_credit
+
+
 class UploadExcelFileView(APIView):
     parser_classes = [MultiPartParser]
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
     @swagger_auto_schema(
-    operation_description="Upload an Excel file. Admins can upload on behalf of users by providing `user_id`.",
-    manual_parameters=[
-        openapi.Parameter(
-            name="file",
-            in_=openapi.IN_FORM,
-            type=openapi.TYPE_FILE,
-            required=True,
-            description="Excel .xlsx file to be uploaded",
-        ),
-        openapi.Parameter(
-            name="user_id",
-            in_=openapi.IN_FORM,
-            type=openapi.TYPE_INTEGER,
-            required=False,
-            description="User ID to upload report on behalf of (admin only)",
-        ),
-    ],
-    responses={
-        200: openapi.Response(description="Success"),
-        400: "Invalid file or duplicate upload",
-        403: "Permission denied",
-        500: "Internal server error",
-    },
+        operation_description="Upload an Excel file. Admins can upload on behalf of users by providing `user_id`.",
+        manual_parameters=[
+            openapi.Parameter(
+                name="file",
+                in_=openapi.IN_FORM,
+                type=openapi.TYPE_FILE,
+                required=True,
+                description="Excel .xlsx file to be uploaded",
+            ),
+            openapi.Parameter(
+                name="user_id",
+                in_=openapi.IN_FORM,
+                type=openapi.TYPE_INTEGER,
+                required=False,
+                description="User ID to upload report on behalf of (admin only)",
+            ),
+        ],
+        responses={
+            200: openapi.Response(description="Success"),
+            400: "Invalid file or duplicate upload",
+            402: "Insufficient credits",
+            403: "Permission denied",
+            500: "Internal server error",
+        },
     )
     def post(self, request):
         """
         Uploads a single .xlsx, validates & processes it, stores in S3, then records DB metadata.
-        Critical fixes:
-        - Rewind (seek(0)) after each read (hashing/processing) and before S3 upload
-        - Tolerate common Excel MIME types (some browsers send octet-stream)
+
+        Key behavior:
+        - FAIL FAST: pre-read sheet names to count matches, reserve credits, then process.
+        - Quantity-aware credits: one-time covers whole file; subscription consumes `match_count`.
+        - Rewind (seek(0)) before hashing, processing, and S3 upload.
         """
         try:
             # ---- 1) Extract file -------------------------------------------------
@@ -64,13 +71,8 @@ class UploadExcelFileView(APIView):
             excel_file = files[0]
             filename = excel_file.name
 
-            # Accept typical Excel types; some clients send application/octet-stream
+            # Accept typical Excel types (suffix enforced)
             allowed_suffix = filename.lower().endswith(".xlsx")
-            allowed_cts = {
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                "application/octet-stream",
-                "application/vnd.ms-excel",  # occasionally seen
-            }
             if not allowed_suffix:
                 return Response({"error": "Only .xlsx Excel files are allowed."}, status=400)
 
@@ -85,7 +87,43 @@ class UploadExcelFileView(APIView):
                 except CustomUser.DoesNotExist:
                     return Response({"error": "Invalid athlete user_id provided."}, status=400)
 
-            # ---- 3) Hash to detect duplicates -----------------------------------
+            # ---- 3) PREFLIGHT: count matches fast + CREDIT GUARD ----------------
+            try:
+                excel_file.seek(0)
+            except Exception:
+                pass
+
+            try:
+                match_count = count_matches(excel_file)  # fast, sheet-name only
+            except Exception:
+                # If the file cannot be opened as Excel at all
+                return Response({"error": "Invalid or unreadable Excel file."}, status=400)
+
+            if match_count <= 0:
+                return Response({"error": "No matches found in the file."}, status=400)
+
+            ok, ticket, msg = reserve_credit(target_user, units=match_count)
+            if not ok:
+                return Response(
+                    {
+                        "status": "blocked",
+                        "code": "INSUFFICIENT_CREDITS",
+                        "message": msg,
+                        "match_count": match_count,
+                    },
+                    status=402
+                )
+
+            # Example optional policy: one-time must have >= 4 matches
+            if ticket.source == "one_time" and match_count < 4:
+                return Response(
+                    {"status": "blocked",
+                     "message": "One-time PDF requires at least 4 matches.",
+                     "match_count": match_count},
+                    status=400
+                )
+
+            # ---- 4) Hash to detect duplicates -----------------------------------
             try:
                 excel_file.seek(0)
             except Exception:
@@ -106,19 +144,31 @@ class UploadExcelFileView(APIView):
                     status=400,
                 )
 
-            # ---- 4) Process & validate ------------------------------------------
+            # ---- 5) Process & validate (heavy work happens only after credit ok)-
             try:
                 excel_file.seek(0)
             except Exception:
                 pass
-            result, success = process_excel_file(excel_file)
+
+            processed = process_excel_file(excel_file)
+            if isinstance(processed, tuple):
+                # back-compat with your existing (result, success)
+                if len(processed) == 2:
+                    result, success = processed
+                elif len(processed) >= 3:
+                    result, success, _meta = processed
+                else:
+                    return Response({"error": "Invalid processor return format."}, status=500)
+            else:
+                return Response({"error": "Invalid processor return format."}, status=500)
+
             if not success:
                 return Response(
                     {"status": "error", "message": "Validation failed.", "errors": result},
                     status=400,
                 )
 
-            # ---- 5) Upload to S3 (rewind again BEFORE upload) -------------------
+            # ---- 6) Upload to S3 ------------------------------------------------
             try:
                 excel_file.seek(0)
             except Exception:
@@ -132,9 +182,9 @@ class UploadExcelFileView(APIView):
             s3_key_uploaded = s3_result[0]["key"]
             s3_url_uploaded = s3_result[0].get("url")
 
-            # ---- 6) Save DB record ----------------------------------------------
+            # ---- 7) Save DB record ----------------------------------------------
             file_size_mb = round(getattr(excel_file, "size", 0) / (1024 * 1024), 2)
-            AthleteReport.objects.create(
+            report = AthleteReport.objects.create(
                 user=target_user,
                 filename=filename,
                 pdf_data=result,
@@ -143,13 +193,18 @@ class UploadExcelFileView(APIView):
                 s3_key=s3_key_uploaded,
             )
 
-            # ---- 7) Done ---------------------------------------------------------
+            # ---- 8) Commit reserved credits (consume) ---------------------------
+            commit_credit(ticket)
+
+            # ---- 9) Done ---------------------------------------------------------
             return Response(
                 {
                     "status": "success",
                     "message": f"Report uploaded successfully for {target_user.email}.",
                     "s3_key": s3_key_uploaded,
                     "s3_url": s3_url_uploaded,
+                    "match_count": match_count,
+                    "credit_source": ticket.source,
                 },
                 status=200,
             )
@@ -157,7 +212,6 @@ class UploadExcelFileView(APIView):
         except Exception as e:
             print(f"Upload error: {e}")
             return Response({"error": "An unexpected error occurred."}, status=500)
-
 
 class ListUserReportsView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
@@ -339,16 +393,6 @@ class ListUserVideoUrlsView(ListAPIView):
             qs = qs.filter(Q(url__icontains=q))
         return qs
 
-# views.py
-import re
-from collections import defaultdict
-from datetime import datetime
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework import status
-from drf_yasg import openapi
-from drf_yasg.utils import swagger_auto_schema
-from django.db.models import Q
 
 class ReportKPIsView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]

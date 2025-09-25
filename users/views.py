@@ -38,6 +38,10 @@ from .stripe_utils import get_price_id
 
 import json
 from athleteai.permissions import BlockSuperUserPermission, IsAdminOnly
+from users.subscription_limits import stamp_free_trial
+from users.subscription_limits import remaining_subscription_credits, ensure_period
+
+
 
 # Stripe configuration
 import stripe
@@ -64,13 +68,18 @@ class RegisterView(APIView):
 
         try:
             if flow_type == "free" or plan == "free":
-                # Activate free locally (no Stripe)
+                # Activate free with trial window
                 sub, _ = Subscription.objects.get_or_create(user=user)
                 sub.plan = "free"
                 sub.interval = None
-                sub.status = "active"
+                sub.cancel_at_period_end = False
+                stamp_free_trial(sub)  # sets status=trialing, trial_start/end, window, usage=0
                 sub.stripe_subscription_id = None
-                sub.save(update_fields=["plan", "interval", "status", "stripe_subscription_id"])
+                sub.save(update_fields=[
+                    "plan","interval","status","trial_start","trial_end",
+                    "current_period_start","current_period_end","period_usage",
+                    "cancel_at_period_end","stripe_subscription_id"
+                ])
 
             elif flow_type in ("subscription", "one_time") and plan:
                 # Ensure Stripe customer
@@ -299,10 +308,16 @@ class CreateCheckoutSessionView(APIView):
             sub, _ = Subscription.objects.get_or_create(user=user)
             sub.plan = "free"
             sub.interval = None
-            sub.status = "active"
+            sub.cancel_at_period_end = False
+            stamp_free_trial(sub)  # set trialing + trial_start/end + window
             sub.stripe_subscription_id = None
-            sub.save(update_fields=["plan", "interval", "status", "stripe_subscription_id"])
+            sub.save(update_fields=[
+                "plan","interval","status","trial_start","trial_end",
+                "current_period_start","current_period_end","period_usage",
+                "cancel_at_period_end","stripe_subscription_id"
+            ])
             return Response({"detail": "Free plan activated"}, status=status.HTTP_200_OK)
+
 
         # Ensure Stripe customer
         sub, _ = Subscription.objects.get_or_create(user=user)
@@ -432,3 +447,35 @@ class CurrentSubscriptionView(APIView):
             payload["remaining_report_credits"] = total - used
 
         return Response(CurrentSubscriptionSerializer(payload).data, status=status.HTTP_200_OK)
+
+
+class CurrentLimitsView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    def get(self, request):
+        user = request.user
+        sub, _ = Subscription.objects.get_or_create(user=user)
+
+        # ensure monthly window fields exist / roll forward if needed
+        ensure_period(sub)
+
+        plan = sub.plan or "free"
+        used = sub.period_usage or 0
+        remaining = remaining_subscription_credits(sub)
+        limit = used + remaining    # effective cap for the current period
+        trial_active = (sub.status == "trialing" and sub.trial_end and sub.trial_end >= now())
+
+        payload = {
+            "plan": plan,
+            "interval": sub.interval,
+            "status": sub.status,
+            "trial_active": trial_active,
+            "trial_start": sub.trial_start,
+            "trial_end": sub.trial_end,
+            "period_start": sub.current_period_start,
+            "period_end": sub.current_period_end,
+            "used": used,
+            "limit": limit,
+            "remaining": remaining,
+        }
+        return Response(payload, status=200)

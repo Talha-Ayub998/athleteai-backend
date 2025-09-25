@@ -140,10 +140,14 @@ def stripe_webhook(request):
                 sub_rec.stripe_subscription_id = sub_id
                 sub_rec.status = stripe_sub.get("status", sub_rec.status)
 
+                # >>> ADD start + end from Stripe <<<
+                cps_unix = stripe_sub.get("current_period_start")
                 cpe_unix = stripe_sub.get("current_period_end")
-                sub_rec.current_period_end = (
-                    datetime.fromtimestamp(cpe_unix, tz=timezone.utc) if cpe_unix else None
-                )
+                if cps_unix:
+                    sub_rec.current_period_start = datetime.fromtimestamp(cps_unix, tz=timezone.utc)
+                if cpe_unix:
+                    sub_rec.current_period_end = datetime.fromtimestamp(cpe_unix, tz=timezone.utc)
+
                 sub_rec.cancel_at_period_end = bool(stripe_sub.get("cancel_at_period_end"))
                 sub_rec.save()
 
@@ -201,10 +205,14 @@ def stripe_webhook(request):
 
         sub_rec.status = stripe_sub.get("status", sub_rec.status)
 
+        # >>> ADD start + end from Stripe <<<
+        cps_unix = stripe_sub.get("current_period_start")
         cpe_unix = stripe_sub.get("current_period_end")
-        sub_rec.current_period_end = (
-            datetime.fromtimestamp(cpe_unix, tz=timezone.utc) if cpe_unix else None
-        )
+        if cps_unix:
+            sub_rec.current_period_start = datetime.fromtimestamp(cps_unix, tz=timezone.utc)
+        if cpe_unix:
+            sub_rec.current_period_end = datetime.fromtimestamp(cpe_unix, tz=timezone.utc)
+
         sub_rec.cancel_at_period_end = bool(stripe_sub.get("cancel_at_period_end"))
 
         if etype == "customer.subscription.deleted":
@@ -227,10 +235,15 @@ def stripe_webhook(request):
                 try:
                     sub = stripe.Subscription.retrieve(sub_id, expand=["items.data.price"])
                     sub_rec.status = sub.get("status", sub_rec.status)
+
+                    # >>> ADD start + end from Stripe <<<
+                    cps = sub.get("current_period_start")
                     cpe = sub.get("current_period_end")
-                    sub_rec.current_period_end = (
-                        datetime.fromtimestamp(cpe, tz=timezone.utc) if cpe else None
-                    )
+                    if cps:
+                        sub_rec.current_period_start = datetime.fromtimestamp(cps, tz=timezone.utc)
+                    if cpe:
+                        sub_rec.current_period_end = datetime.fromtimestamp(cpe, tz=timezone.utc)
+
                     sub_rec.cancel_at_period_end = bool(sub.get("cancel_at_period_end"))
                     sub_rec.save()
                 except Exception as e:

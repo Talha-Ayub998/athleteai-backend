@@ -74,16 +74,35 @@ class Subscription(models.Model):
     interval = models.CharField(max_length=10, choices=INTERVAL_CHOICES, null=True, blank=True)
     stripe_customer_id = models.CharField(max_length=100, blank=True, null=True)
     stripe_subscription_id = models.CharField(max_length=100, blank=True, null=True)
-    status = models.CharField(max_length=30, default='inactive')  # active, trialing, past_due, canceled, incomplete
-    current_period_end = models.DateTimeField(null=True, blank=True)
+
+    # existing status lifecycle (inactive/active/trialing/past_due/canceled/…)
+    status = models.CharField(max_length=30, default='inactive')
+
+    # ➕ NEW: trial tracking (14-day policy will be set in logic step)
+    trial_start = models.DateTimeField(null=True, blank=True)
+    trial_end   = models.DateTimeField(null=True, blank=True)
+
+    # ➕ NEW: monthly window + usage counter
+    current_period_start = models.DateTimeField(null=True, blank=True)
+    current_period_end   = models.DateTimeField(null=True, blank=True)
+    period_usage         = models.PositiveIntegerField(default=0)  # how many reports used in current window
+
     cancel_at_period_end = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"{self.user.email} – {self.plan}/{self.interval or '-'} ({self.status})"
+
 
 class ReportPurchase(models.Model):
     user = models.ForeignKey('users.CustomUser', on_delete=models.CASCADE, related_name='report_purchases')
     stripe_payment_intent = models.CharField(max_length=100)
     amount = models.IntegerField()  # in cents
     created_at = models.DateTimeField(auto_now_add=True)
-    # optionally store a usage/entitlement flag (e.g., downloads remaining)
+    consumed   = models.BooleanField(default=False)
+    consumed_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"{self.user.email} – PI:{self.stripe_payment_intent} – {self.amount}c"
 
 class ContactMessage(models.Model):
     name = models.CharField(max_length=150)
