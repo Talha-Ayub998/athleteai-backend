@@ -133,6 +133,7 @@ def stripe_webhook(request):
 
                 # Expand price so we get lookup_key
                 stripe_sub = stripe.Subscription.retrieve(sub_id, expand=["items.data.price"])
+                logger.info("FULL Stripe subscription payload: %s", stripe_sub)
                 plan, interval = _plan_interval_from_subscription(stripe_sub, session_meta)
 
                 sub_rec.plan = plan or sub_rec.plan or "free"
