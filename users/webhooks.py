@@ -143,6 +143,12 @@ def stripe_webhook(request):
                 # >>> ADD start + end from Stripe <<<
                 cps_unix = stripe_sub.get("current_period_start")
                 cpe_unix = stripe_sub.get("current_period_end")
+                logger.info(
+                    "Stripe period start=%s, end=%s for subscription=%s",
+                    cps_unix,
+                    cpe_unix,
+                    stripe_sub.get("id")
+                )
                 if cps_unix:
                     sub_rec.current_period_start = datetime.fromtimestamp(cps_unix, tz=timezone.utc)
                 if cpe_unix:
@@ -216,6 +222,12 @@ def stripe_webhook(request):
         # >>> ADD start + end from Stripe <<<
         cps_unix = stripe_sub.get("current_period_start")
         cpe_unix = stripe_sub.get("current_period_end")
+        logger.info(
+            "Stripe period start=%s, end=%s for subscription=%s",
+            cps_unix,
+            cpe_unix,
+            stripe_sub.get("id")
+        )
         if cps_unix:
             sub_rec.current_period_start = datetime.fromtimestamp(cps_unix, tz=timezone.utc)
         if cpe_unix:
@@ -255,6 +267,12 @@ def stripe_webhook(request):
                     # >>> ADD start + end from Stripe <<<
                     cps = sub.get("current_period_start")
                     cpe = sub.get("current_period_end")
+                    logger.info(
+                        "Stripe period start=%s, end=%s for subscription=%s",
+                        cps_unix,
+                        cpe_unix,
+                        stripe_sub.get("id")
+                    )
                     if cps:
                         sub_rec.current_period_start = datetime.fromtimestamp(cps, tz=timezone.utc)
                     if cpe:
