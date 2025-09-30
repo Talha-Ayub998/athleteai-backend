@@ -14,7 +14,7 @@ urlpatterns = [
     path('me/', CurrentUserView.as_view(), name='current-user'),
     path('login/', LoginView.as_view(), name='login'),
     path('logout/', LogoutView.as_view(), name='logout'),
-    path("limits/", CurrentLimitsView.as_view(), name="current-limits"),
+    # path("limits/", CurrentLimitsView.as_view(), name="current-limits"),
     path('token/refresh/', CustomTokenRefreshView.as_view(), name='token_refresh'),
     path('create-checkout-session/', CreateCheckoutSessionView.as_view(), name='create-checkout-session'),
     path("billing-portal/", BillingPortalView.as_view()),
@@ -23,7 +23,7 @@ urlpatterns = [
 urlpatterns += [
     path('stripe/webhook/', stripe_webhook, name='stripe-webhook'),
     path('subscription/cancel/', CancelSubscriptionView.as_view(), name='subscription-cancel'),
-    path('my-subscription/', CurrentSubscriptionView.as_view(), name='subscription-details'),
+    path('my-subscription/', CurrentLimitsView.as_view(), name='subscription-details'),
     path('success/', payment_success, name='payment-success'),
     path('cancel/', payment_cancel, name='payment-cancel'),
 ]
