@@ -449,6 +449,8 @@ class CurrentSubscriptionView(APIView):
             "current_period_end": sub.current_period_end,  # DRF will render ISO 8601
             "stripe_customer_id": sub.stripe_customer_id,
             "stripe_subscription_id": sub.stripe_subscription_id,
+            "trial_start": sub.trial_start,
+            "trial_end": sub.trial_end,
         }
 
         # OPTIONAL: remaining report credits (only if you added ReportPurchase.consumed)
