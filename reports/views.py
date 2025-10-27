@@ -28,7 +28,11 @@ class UploadExcelFileView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
     @swagger_auto_schema(
-        operation_description="Upload an Excel file. Admins can upload on behalf of users by providing `user_id`.",
+        operation_description=(
+            "Upload an Excel file. Admins can upload on behalf of users by providing `user_id`.\n"
+            "Admins bypass credit checks ONLY when uploading for themselves (unlimited). "
+            "If an admin uploads on behalf of a user, the target user's credits are checked."
+        ),
         manual_parameters=[
             openapi.Parameter(
                 name="file",
@@ -57,37 +61,42 @@ class UploadExcelFileView(APIView):
         """
         Uploads a single .xlsx, validates & processes it, stores in S3, then records DB metadata.
 
-        Key behavior:
-        - FAIL FAST: pre-read sheet names to count matches, reserve credits, then process.
-        - Quantity-aware credits: one-time covers whole file; subscription consumes `match_count`.
-        - Rewind (seek(0)) before hashing, processing, and S3 upload.
+        Rules:
+        - Admin (role == 'admin') uploading for SELF => skip credits entirely.
+        - Admin uploading on BEHALF OF ANOTHER USER => check that user's credits.
+        - Non-admins => credit checks as before.
         """
         try:
+            # ---- 0) Role flags ---------------------------------------------------
+            is_admin = getattr(request.user, "role", None) == "admin"
+
             # ---- 1) Extract file -------------------------------------------------
             files = request.FILES.getlist("file")
             if not files:
                 return Response({"error": "No files provided."}, status=400)
 
             excel_file = files[0]
-            filename = excel_file.name
+            filename = excel_file.name or "upload.xlsx"
 
-            # Accept typical Excel types (suffix enforced)
-            allowed_suffix = filename.lower().endswith(".xlsx")
-            if not allowed_suffix:
+            if not filename.lower().endswith(".xlsx"):
                 return Response({"error": "Only .xlsx Excel files are allowed."}, status=400)
 
-            # ---- 2) Resolve target user (admin may upload for athlete) ----------
+            # ---- 2) Resolve target user ----------------------------------------
             target_user = request.user
             user_id = request.data.get("user_id")
             if user_id:
-                if getattr(request.user, "role", None) != "admin":
+                if not is_admin:
                     return Response({"error": "Only admins can upload reports for other users."}, status=403)
                 try:
-                    target_user = CustomUser.objects.get(id=user_id, role="athlete")
+                    # No role restriction: admin can upload for any user
+                    target_user = CustomUser.objects.get(id=user_id)
                 except CustomUser.DoesNotExist:
-                    return Response({"error": "Invalid athlete user_id provided."}, status=400)
+                    return Response({"error": "Invalid user_id provided."}, status=400)
 
-            # ---- 3) PREFLIGHT: count matches fast + CREDIT GUARD ----------------
+            # Determine if admin is uploading for self
+            is_self_upload = (target_user.id == request.user.id)
+
+            # ---- 3) PREFLIGHT: count matches -----------------------------------
             try:
                 excel_file.seek(0)
             except Exception:
@@ -96,40 +105,46 @@ class UploadExcelFileView(APIView):
             try:
                 match_count = count_matches(excel_file)  # fast, sheet-name only
             except Exception:
-                # If the file cannot be opened as Excel at all
                 return Response({"error": "Invalid or unreadable Excel file."}, status=400)
 
             if match_count <= 0:
                 return Response({"error": "No matches found in the file."}, status=400)
 
-            ok, ticket, msg = reserve_credit(target_user, units=match_count)
-            if not ok:
-                return Response(
-                    {
-                        "status": "blocked",
-                        "code": "INSUFFICIENT_CREDITS",
-                        "message": msg,
-                        "match_count": match_count,
-                    },
-                    status=402
-                )
+            # ---- 4) CREDIT GUARD -----------------------------------------------
+            # Admin skips credits ONLY when uploading for self.
+            must_check_credits = not (is_admin and is_self_upload)
 
-            # Example optional policy: one-time must have >= 4 matches
-            if ticket.source == "one_time" and match_count < 4:
-                return Response(
-                    {"status": "blocked",
-                     "message": "One-time PDF requires at least 4 matches.",
-                     "match_count": match_count},
-                    status=400
-                )
+            ticket = None
+            if must_check_credits:
+                ok, ticket, msg = reserve_credit(target_user, units=match_count)
+                if not ok:
+                    return Response(
+                        {
+                            "status": "blocked",
+                            "code": "INSUFFICIENT_CREDITS",
+                            "message": msg,
+                            "match_count": match_count,
+                        },
+                        status=400
+                    )
+                # Optional policy remains for credit-checked flows
+                if getattr(ticket, "source", None) == "one_time" and match_count < 4:
+                    return Response(
+                        {
+                            "status": "blocked",
+                            "message": "One-time PDF requires at least 4 matches.",
+                            "match_count": match_count
+                        },
+                        status=400
+                    )
 
-            # ---- 4) Hash to detect duplicates -----------------------------------
+            # ---- 5) Hash to detect duplicates -----------------------------------
             try:
                 excel_file.seek(0)
             except Exception:
                 pass
-            file_hash = get_file_hash(excel_file)
 
+            file_hash = get_file_hash(excel_file)
             duplicate_report = AthleteReport.objects.filter(
                 user=target_user, file_hash=file_hash
             ).first()
@@ -144,7 +159,7 @@ class UploadExcelFileView(APIView):
                     status=400,
                 )
 
-            # ---- 5) Process & validate (heavy work happens only after credit ok)-
+            # ---- 6) Process & validate ------------------------------------------
             try:
                 excel_file.seek(0)
             except Exception:
@@ -152,7 +167,6 @@ class UploadExcelFileView(APIView):
 
             processed = process_excel_file(excel_file)
             if isinstance(processed, tuple):
-                # back-compat with your existing (result, success)
                 if len(processed) == 2:
                     result, success = processed
                 elif len(processed) >= 3:
@@ -168,7 +182,7 @@ class UploadExcelFileView(APIView):
                     status=400,
                 )
 
-            # ---- 6) Upload to S3 ------------------------------------------------
+            # ---- 7) Upload to S3 ------------------------------------------------
             try:
                 excel_file.seek(0)
             except Exception:
@@ -182,9 +196,9 @@ class UploadExcelFileView(APIView):
             s3_key_uploaded = s3_result[0]["key"]
             s3_url_uploaded = s3_result[0].get("url")
 
-            # ---- 7) Save DB record ----------------------------------------------
+            # ---- 8) Save DB record ----------------------------------------------
             file_size_mb = round(getattr(excel_file, "size", 0) / (1024 * 1024), 2)
-            report = AthleteReport.objects.create(
+            AthleteReport.objects.create(
                 user=target_user,
                 filename=filename,
                 pdf_data=result,
@@ -193,10 +207,11 @@ class UploadExcelFileView(APIView):
                 s3_key=s3_key_uploaded,
             )
 
-            # ---- 8) Commit reserved credits (consume) ---------------------------
-            commit_credit(ticket)
+            # ---- 9) Commit reserved credits (only if we reserved) ---------------
+            if must_check_credits and ticket:
+                commit_credit(ticket)
 
-            # ---- 9) Done ---------------------------------------------------------
+            # ---- 10) Done --------------------------------------------------------
             return Response(
                 {
                     "status": "success",
@@ -204,7 +219,11 @@ class UploadExcelFileView(APIView):
                     "s3_key": s3_key_uploaded,
                     "s3_url": s3_url_uploaded,
                     "match_count": match_count,
-                    "credit_source": ticket.source,
+                    "credit_source": (
+                        "admin_bypass"
+                        if (is_admin and is_self_upload)
+                        else getattr(ticket, "source", None)
+                    ),
                 },
                 status=200,
             )
