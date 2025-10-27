@@ -125,7 +125,7 @@ class UploadExcelFileView(APIView):
                             "message": msg,
                             "match_count": match_count,
                         },
-                        status=400
+                        status=402
                     )
                 # Optional policy remains for credit-checked flows
                 if getattr(ticket, "source", None) == "one_time" and match_count < 4:
