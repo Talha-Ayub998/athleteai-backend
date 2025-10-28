@@ -61,6 +61,18 @@ class RegisterView(APIView):
         user = serializer.save()
         refresh = RefreshToken.for_user(user)
 
+        # ✅ Send notification email to the owner just before returning the response
+        try:
+            send_mail(
+                subject="New user signup notification",
+                message=f"A new user has registered on SubStats.\n\nEmail: {user.email}\nName: {user.username}",
+                from_email=settings.EMAIL_HOST_USER,
+                recipient_list=["talhaayub9980@gmail.com"],
+                fail_silently=True,
+            )
+        except Exception:
+            pass
+
         # 2) if website sent plan params, immediately create Stripe Checkout Session
         flow_type = (request.data.get("type") or "").strip().lower()
         plan      = (request.data.get("plan") or "").strip().lower()
@@ -141,18 +153,6 @@ class RegisterView(APIView):
         except ValueError as e:
             # get_price_id() raised (unknown price key)
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # ✅ Send notification email to the owner just before returning the response
-        try:
-            send_mail(
-                subject="New user signup notification",
-                message=f"A new user has registered on SubStats.\n\nEmail: {user.email}\nName: {user.username}",
-                from_email=settings.EMAIL_HOST_USER,
-                recipient_list=["talhaayub9980@gmail.com"],
-                fail_silently=True,
-            )
-        except Exception:
-            pass
 
         # 3) return tokens PLUS checkout_url (if we created one)
         return Response({
