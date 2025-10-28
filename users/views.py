@@ -40,6 +40,8 @@ import json
 from athleteai.permissions import BlockSuperUserPermission, IsAdminOnly
 from users.subscription_limits import stamp_free_trial
 from users.subscription_limits import remaining_subscription_credits, ensure_period
+from django.core.mail import send_mail
+from django.conf import settings
 
 
 
@@ -139,6 +141,18 @@ class RegisterView(APIView):
         except ValueError as e:
             # get_price_id() raised (unknown price key)
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # ✅ Send notification email to the owner just before returning the response
+        try:
+            send_mail(
+                subject="New user signup notification",
+                message=f"A new user has registered on SubStats.\n\nEmail: {user.email}\nName: {user.username}",
+                from_email=settings.EMAIL_HOST_USER,
+                recipient_list=["talhaayub9980@gmail.com"],
+                fail_silently=True,
+            )
+        except Exception:
+            pass
 
         # 3) return tokens PLUS checkout_url (if we created one)
         return Response({
