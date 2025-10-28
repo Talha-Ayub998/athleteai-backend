@@ -67,7 +67,7 @@ class RegisterView(APIView):
                 subject="New user signup notification",
                 message=f"A new user has registered on SubStats.\n\nEmail: {user.email}\nName: {user.username}",
                 from_email=settings.EMAIL_HOST_USER,
-                recipient_list=["talhaayub9980@gmail.com"],
+                recipient_list=["submissions@substats.app"],
                 fail_silently=True,
             )
         except Exception:
