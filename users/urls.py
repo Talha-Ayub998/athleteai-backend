@@ -4,7 +4,7 @@ from .views import RegisterView, LoginView, \
                     CreateCheckoutSessionView, ListUsersView, \
                     CurrentUserView, CancelSubscriptionView, \
                     CurrentSubscriptionView, ContactUsView, \
-                    CurrentLimitsView, BillingPortalView
+                    CurrentLimitsView, BillingPortalView, NewsletterSignupView
 from users.webhooks import *
 
 urlpatterns = [
@@ -18,6 +18,7 @@ urlpatterns = [
     path('token/refresh/', CustomTokenRefreshView.as_view(), name='token_refresh'),
     path('create-checkout-session/', CreateCheckoutSessionView.as_view(), name='create-checkout-session'),
     path("billing-portal/", BillingPortalView.as_view()),
+    path("subscribe/", NewsletterSignupView.as_view(), name="newsletter-subscribe"),
 ]
 
 urlpatterns += [

@@ -30,7 +30,8 @@ from .serializers import (
     UserSerializer,
     UserListSerializer,
     CurrentSubscriptionSerializer,
-    ContactMessageSerializer
+    ContactMessageSerializer,
+    NewsletterSignupSerializer
 )
 from .stripe_prices import STRIPE_PRICES
 from .stripe_utils import get_price_id
@@ -523,3 +524,36 @@ class BillingPortalView(APIView):
             return_url="https://portal.substats.app/plans",
         )
         return Response({"billing_portal_url": portal.url}, status=200)
+
+class NewsletterSignupView(APIView):
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = NewsletterSignupSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(
+                {"error": "Invalid email address."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        subscriber_email = serializer.validated_data["email"]
+
+        try:
+            send_mail(
+                subject="New newsletter subscription",
+                message=f"A new user subscribed to the newsletter.\n\nEmail: {subscriber_email}",
+                from_email=settings.EMAIL_HOST_USER,
+                recipient_list=["submissions@substats.app"],
+                fail_silently=False,
+            )
+            return Response(
+                {"message": "Successfully subscribed!"},
+                status=status.HTTP_201_CREATED
+            )
+
+        except Exception as e:
+            print(f"[NEWSLETTER ERROR] Failed to send email for {subscriber_email}: {e}")
+            return Response(
+                {"error": "Subscription failed. Please try again later."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

@@ -97,3 +97,6 @@ class ContactMessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContactMessage
         fields = ["id", "name", "email", "description", "created_at"]
+
+class NewsletterSignupSerializer(serializers.Serializer):
+    email = serializers.EmailField()
