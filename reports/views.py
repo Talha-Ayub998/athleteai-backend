@@ -263,10 +263,17 @@ class ListUserReportsView(APIView):
                     .filter(Q(user__role='athlete') | Q(user=user))
                     .exclude(~Q(user=user) & Q(user__role='admin'))
                 )
+                videos_qs = (
+                    VideoUrl.objects
+                    .filter(Q(user__role='athlete') | Q(user=user))
+                    .exclude(~Q(user=user) & Q(user__role='admin'))
+                )
             else:
                 reports_qs = AthleteReport.objects.filter(user=user)
+                videos_qs = VideoUrl.objects.filter(user=user)
 
             reports_qs = reports_qs.select_related("user").order_by('-uploaded_at')
+            videos_qs = videos_qs.select_related("user").order_by("-created_at")
 
             # --- group reports by user_id
             reports_by_user = defaultdict(list)
@@ -281,20 +288,14 @@ class ListUserReportsView(APIView):
                     "pdf_data": r.pdf_data,
                 })
 
-            # if no reports, return empty (and avoid extra video query)
-            if not reports_by_user:
-                return Response([], status=status.HTTP_200_OK)
-
-            # --- fetch videos for just those users (one query), optional filter
-            user_ids = list(reports_by_user.keys())
-            videos_qs = VideoUrl.objects.filter(user_id__in=user_ids).order_by("-created_at")
-
             q = request.query_params.get("q")
             if q:
                 videos_qs = videos_qs.filter(url__icontains=q)
 
             videos_by_user = defaultdict(list)
             for v in videos_qs:
+                if v.user_id not in user_meta:
+                    user_meta[v.user_id] = {"user_id": v.user_id, "email": v.user.email}
                 videos_by_user[v.user_id].append({
                     "id": v.id,
                     "url": v.url,
@@ -302,6 +303,9 @@ class ListUserReportsView(APIView):
                 })
 
             # --- merge: one object per user
+            if not user_meta:
+                return Response([], status=status.HTTP_200_OK)
+
             users_payload = []
             for uid, meta in user_meta.items():
                 users_payload.append({
@@ -693,4 +697,3 @@ class ReportKPIsView(APIView):
         if value is None:
             return None
         return f"{round(value * 100, digits):.{digits}f}%"
-
