@@ -66,8 +66,10 @@ def _send_signup_emails(user):
 
     # User welcome email
     portal_link = os.getenv("PORTAL_LINK", "https://portal.substats.app")
+    greeting_name = (user.username or "").strip()
+    greeting = f"Hey {greeting_name}," if greeting_name else "Hey there,"
     welcome_message = (
-        "Hey there,\n\n"
+        f"{greeting}\n\n"
         "Thank you for signing up for Sub Stats and trusting us to strangle your data and put real numbers behind your matches.\n\n"
         "Sub Stats was built for grapplers who want more than just results. We help you understand what actually happens on the mat through performance metrics, match history, and insights that show where you are winning and where you can improve.\n\n"
         "Inside your account you will be able to\n"
