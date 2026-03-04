@@ -50,6 +50,54 @@ from django.conf import settings
 import stripe
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
+
+def _send_signup_emails(user):
+    # Internal owner notification
+    try:
+        send_mail(
+            subject="New user signup notification",
+            message=f"A new user has registered on SubStats.\n\nEmail: {user.email}\nName: {user.username}",
+            from_email=settings.EMAIL_HOST_USER,
+            recipient_list=["submissions@substats.app"],
+            fail_silently=True,
+        )
+    except Exception:
+        pass
+
+    # User welcome email
+    portal_link = os.getenv("PORTAL_LINK", "https://portal.substats.app")
+    welcome_message = (
+        "Hey there,\n\n"
+        "Thank you for signing up for Sub Stats and trusting us to strangle your data and put real numbers behind your matches.\n\n"
+        "Sub Stats was built for grapplers who want more than just results. We help you understand what actually happens on the mat through performance metrics, match history, and insights that show where you are winning and where you can improve.\n\n"
+        "Inside your account you will be able to\n"
+        "• Track your matches and performance metrics\n"
+        "• Break down scoring, submissions, and efficiency\n"
+        "• Build your grappler profile\n"
+        "• Turn your results into data driven insights\n\n"
+        "Our goal is simple. Help grapplers, coaches, and fans see the sport through data.\n\n"
+        "Your account is ready and waiting.\n\n"
+        "Log in here to get started\n"
+        f"{portal_link}\n\n"
+        "If you have questions or ideas you want to see built into Sub Stats, just reply to this email. We are building this platform with the community.\n\n"
+        "Now let’s put some numbers behind your jiu jitsu.\n\n"
+        "See you on the mats,\n\n"
+        "Abe Diaz\n"
+        "Founder, Sub Stats\n"
+        "“The Data Strangler” 🥋📈"
+    )
+
+    try:
+        send_mail(
+            subject="Welcome to Sub Stats. Let’s Strangle Some Data 🧠📊",
+            message=welcome_message,
+            from_email=settings.EMAIL_HOST_USER,
+            recipient_list=[user.email],
+            fail_silently=True,
+        )
+    except Exception:
+        pass
+
 class RegisterView(APIView):
     permission_classes = [AllowAny, BlockSuperUserPermission]
     @swagger_auto_schema(request_body=RegisterSerializer)
@@ -62,17 +110,8 @@ class RegisterView(APIView):
         user = serializer.save()
         refresh = RefreshToken.for_user(user)
 
-        # ✅ Send notification email to the owner just before returning the response
-        try:
-            send_mail(
-                subject="New user signup notification",
-                message=f"A new user has registered on SubStats.\n\nEmail: {user.email}\nName: {user.username}",
-                from_email=settings.EMAIL_HOST_USER,
-                recipient_list=["submissions@substats.app"],
-                fail_silently=True,
-            )
-        except Exception:
-            pass
+        # Send signup emails (internal notification + user welcome)
+        _send_signup_emails(user)
 
         # 2) if website sent plan params, immediately create Stripe Checkout Session
         flow_type = (request.data.get("type") or "").strip().lower()
