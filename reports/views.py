@@ -9,6 +9,7 @@ from rest_framework import status
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
 from django.db.models import Q
+from django.db import transaction, IntegrityError
 from users.models import CustomUser
 from athleteai.permissions import BlockSuperUserPermission
 from rest_framework.pagination import PageNumberPagination
@@ -20,7 +21,7 @@ from reports.models import AthleteReport, VideoUrl
 from reports.serializers import VideoUrlSerializer, VideoUrlReadSerializer
 
 # add imports at the top of reports/views.py
-from users.credit_service import reserve_credit, commit_credit
+from users.credit_service import reserve_credit, commit_credit, CreditCommitError
 
 
 class UploadExcelFileView(APIView):
@@ -66,6 +67,16 @@ class UploadExcelFileView(APIView):
         - Admin uploading on BEHALF OF ANOTHER USER => check that user's credits.
         - Non-admins => credit checks as before.
         """
+        s3 = None
+        s3_key_uploaded = None
+
+        def _cleanup_uploaded_s3():
+            if s3 and s3_key_uploaded:
+                try:
+                    s3.delete_files([s3_key_uploaded])
+                except Exception as cleanup_error:
+                    print(f"S3 cleanup error for key {s3_key_uploaded}: {cleanup_error}")
+
         try:
             # ---- 0) Role flags ---------------------------------------------------
             is_admin = getattr(request.user, "role", None) == "admin"
@@ -196,20 +207,41 @@ class UploadExcelFileView(APIView):
             s3_key_uploaded = s3_result[0]["key"]
             s3_url_uploaded = s3_result[0].get("url")
 
-            # ---- 8) Save DB record ----------------------------------------------
+            # ---- 8/9) Save DB record + commit credits atomically ----------------
             file_size_mb = round(getattr(excel_file, "size", 0) / (1024 * 1024), 2)
-            AthleteReport.objects.create(
-                user=target_user,
-                filename=filename,
-                pdf_data=result,
-                file_size_mb=file_size_mb,
-                file_hash=file_hash,
-                s3_key=s3_key_uploaded,
-            )
+            try:
+                with transaction.atomic():
+                    AthleteReport.objects.create(
+                        user=target_user,
+                        filename=filename,
+                        pdf_data=result,
+                        file_size_mb=file_size_mb,
+                        file_hash=file_hash,
+                        s3_key=s3_key_uploaded,
+                    )
 
-            # ---- 9) Commit reserved credits (only if we reserved) ---------------
-            if must_check_credits and ticket:
-                commit_credit(ticket)
+                    if must_check_credits and ticket:
+                        commit_credit(ticket)
+            except CreditCommitError as e:
+                _cleanup_uploaded_s3()
+                return Response(
+                    {
+                        "status": "blocked",
+                        "code": "INSUFFICIENT_CREDITS",
+                        "message": str(e),
+                        "match_count": match_count,
+                    },
+                    status=402,
+                )
+            except IntegrityError:
+                _cleanup_uploaded_s3()
+                return Response(
+                    {
+                        "status": "duplicate",
+                        "message": "This file has already been uploaded by the user.",
+                    },
+                    status=400,
+                )
 
             # ---- 10) Done --------------------------------------------------------
             return Response(
@@ -229,6 +261,7 @@ class UploadExcelFileView(APIView):
             )
 
         except Exception as e:
+            _cleanup_uploaded_s3()
             print(f"Upload error: {e}")
             return Response({"error": "An unexpected error occurred."}, status=500)
 

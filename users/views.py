@@ -100,6 +100,41 @@ def _send_signup_emails(user):
     except Exception:
         pass
 
+
+def _activate_free_plan(sub):
+    """
+    Activate free plan with a one-time trial.
+    If trial has already been used, keep plan free without resetting trial/usage.
+    Returns True when a new trial is started, else False.
+    """
+    has_used_trial = bool(sub.trial_start)
+    sub.plan = "free"
+    sub.interval = None
+    sub.cancel_at_period_end = False
+    sub.stripe_subscription_id = None
+
+    if not has_used_trial:
+        stamp_free_trial(sub)
+        sub.save(update_fields=[
+            "plan", "interval", "status", "trial_start", "trial_end",
+            "current_period_start", "current_period_end", "period_usage",
+            "cancel_at_period_end", "stripe_subscription_id",
+        ])
+        return True
+
+    # Do not reset trial window/usage when free is selected again.
+    trial_still_active = (
+        sub.status == "trialing"
+        and sub.trial_end
+        and sub.trial_end >= now()
+    )
+    update_fields = ["plan", "interval", "cancel_at_period_end", "stripe_subscription_id"]
+    if not trial_still_active:
+        sub.status = "inactive"
+        update_fields.append("status")
+    sub.save(update_fields=update_fields)
+    return False
+
 class RegisterView(APIView):
     permission_classes = [AllowAny, BlockSuperUserPermission]
     @swagger_auto_schema(request_body=RegisterSerializer)
@@ -107,6 +142,27 @@ class RegisterView(APIView):
         serializer = RegisterSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validate checkout inputs before creating the account to avoid partial signup failures.
+        flow_type = (request.data.get("type") or "").strip().lower()
+        plan      = (request.data.get("plan") or "").strip().lower()
+        interval  = (request.data.get("interval") or "").strip().lower()
+
+        prefetched_price_id = None
+        try:
+            if flow_type == "subscription":
+                if plan not in ("essentials", "precision"):
+                    return Response({"error": "Invalid plan"}, status=status.HTTP_400_BAD_REQUEST)
+                if interval not in ("month", "year"):
+                    return Response({"error": "Missing or invalid interval"}, status=status.HTTP_400_BAD_REQUEST)
+                prefetched_price_id = get_price_id(f"{plan}_{interval}")
+            elif flow_type == "one_time" and plan == "pdf_report":
+                prefetched_price_id = get_price_id("pdf_report")
+        except ValueError as e:
+            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        except stripe.error.StripeError:
+            # Keep signup resilient; checkout can be retried from /create-checkout-session.
+            prefetched_price_id = None
 
         # 1) create the user
         user = serializer.save()
@@ -116,26 +172,12 @@ class RegisterView(APIView):
         _send_signup_emails(user)
 
         # 2) if website sent plan params, immediately create Stripe Checkout Session
-        flow_type = (request.data.get("type") or "").strip().lower()
-        plan      = (request.data.get("plan") or "").strip().lower()
-        interval  = (request.data.get("interval") or "").strip().lower()
-
         checkout_url = None  # default: no checkout if no plan provided
 
         try:
             if flow_type == "free" or plan == "free":
-                # Activate free with trial window
                 sub, _ = Subscription.objects.get_or_create(user=user)
-                sub.plan = "free"
-                sub.interval = None
-                sub.cancel_at_period_end = False
-                stamp_free_trial(sub)  # sets status=trialing, trial_start/end, window, usage=0
-                sub.stripe_subscription_id = None
-                sub.save(update_fields=[
-                    "plan","interval","status","trial_start","trial_end",
-                    "current_period_start","current_period_end","period_usage",
-                    "cancel_at_period_end","stripe_subscription_id"
-                ])
+                _activate_free_plan(sub)
 
             elif flow_type in ("subscription", "one_time") and plan:
                 # Ensure Stripe customer
@@ -153,48 +195,37 @@ class RegisterView(APIView):
                 cancel_url  = 'https://portal.substats.app/api/users/cancel/'
 
                 if flow_type == "subscription":
-                    if plan not in ("essentials", "precision"):
-                        return JsonResponse({"error": "Invalid plan"}, status=400)
-                    if interval not in ("month", "year"):
-                        return JsonResponse({"error": "Missing or invalid interval"}, status=400)
-
-                    key = f"{plan}_{interval}"
-                    price_id = get_price_id(key)
-
-                    session = stripe.checkout.Session.create(
-                        customer=customer_id,
-                        mode='subscription',
-                        line_items=[{"price": price_id, "quantity": 1}],
-                        allow_promotion_codes=True,
-                        success_url=success_url,
-                        cancel_url=cancel_url,
-                        metadata={"user_id": str(user.id), "plan": plan, "interval": interval},
-                        client_reference_id=str(user.id),
-                        idempotency_key=str(uuid.uuid4()),
-                    )
-                    checkout_url = session.url
+                    if prefetched_price_id:
+                        session = stripe.checkout.Session.create(
+                            customer=customer_id,
+                            mode='subscription',
+                            line_items=[{"price": prefetched_price_id, "quantity": 1}],
+                            allow_promotion_codes=True,
+                            success_url=success_url,
+                            cancel_url=cancel_url,
+                            metadata={"user_id": str(user.id), "plan": plan, "interval": interval},
+                            client_reference_id=str(user.id),
+                            idempotency_key=str(uuid.uuid4()),
+                        )
+                        checkout_url = session.url
 
                 elif flow_type == "one_time" and plan == "pdf_report":
-                    price_id = get_price_id("pdf_report")
-
-                    session = stripe.checkout.Session.create(
-                        customer=customer_id,
-                        mode='payment',
-                        line_items=[{"price": price_id, "quantity": 1}],
-                        success_url=success_url,
-                        cancel_url=cancel_url,
-                        metadata={"user_id": str(user.id), "plan": plan},
-                        client_reference_id=str(user.id),
-                        idempotency_key=str(uuid.uuid4()),
-                    )
-                    checkout_url = session.url
+                    if prefetched_price_id:
+                        session = stripe.checkout.Session.create(
+                            customer=customer_id,
+                            mode='payment',
+                            line_items=[{"price": prefetched_price_id, "quantity": 1}],
+                            success_url=success_url,
+                            cancel_url=cancel_url,
+                            metadata={"user_id": str(user.id), "plan": plan},
+                            client_reference_id=str(user.id),
+                            idempotency_key=str(uuid.uuid4()),
+                        )
+                        checkout_url = session.url
 
         except stripe.error.StripeError as e:
             # Don’t fail signup; frontend can call /create-checkout-session later to retry
             checkout_url = None
-        except ValueError as e:
-            # get_price_id() raised (unknown price key)
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
         # 3) return tokens PLUS checkout_url (if we created one)
         return Response({
@@ -368,17 +399,11 @@ class CreateCheckoutSessionView(APIView):
 
         # -------- FREE PLAN ----------
         if flow_type == "free" or plan == "free":
-            sub.plan = "free"
-            sub.interval = None
-            sub.cancel_at_period_end = False
-            stamp_free_trial(sub)  # ✅ sets trial_start, trial_end, current_period_x, usage=0
-            sub.stripe_subscription_id = None
-            sub.save(update_fields=[
-                "plan","interval","status","trial_start","trial_end",
-                "current_period_start","current_period_end","period_usage",
-                "cancel_at_period_end","stripe_subscription_id"
-            ])
-            return Response({"detail": "Free plan activated"}, status=status.HTTP_200_OK)
+            trial_started = _activate_free_plan(sub)
+            return Response(
+                {"detail": "Free plan activated", "trial_started": trial_started},
+                status=status.HTTP_200_OK
+            )
 
         # -------- Ensure Stripe Customer ----------
         if sub.stripe_customer_id:
@@ -477,9 +502,18 @@ class CancelSubscriptionView(APIView):
             else:
                 stripe.Subscription.delete(sub.stripe_subscription_id)
                 # Optimistic local update; webhook will switch to free
+                sub.plan = "free"
+                sub.interval = None
+                sub.stripe_subscription_id = None
                 sub.status = "canceled"
                 sub.cancel_at_period_end = False
-                sub.save(update_fields=["status", "cancel_at_period_end"])
+                sub.save(update_fields=[
+                    "plan",
+                    "interval",
+                    "stripe_subscription_id",
+                    "status",
+                    "cancel_at_period_end",
+                ])
                 return Response({"detail": "Subscription canceled immediately"})
         except stripe.error.StripeError as e:
             return Response({"error": str(e)}, status=400)
