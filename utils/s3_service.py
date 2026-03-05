@@ -19,7 +19,7 @@ class S3Service:
         self.bucket_name = os.getenv('AWS_STORAGE_BUCKET_NAME')
 
 
-    def upload_files(self, files, user_id):
+    def upload_files(self, files, user_id, use_uuid_prefix=True):
         """
         Uploads multiple files to S3 for the given user_id.
         - Rewinds file objects before upload (critical if they were read earlier)
@@ -30,7 +30,7 @@ class S3Service:
         for file_obj in files:
             # Some frameworks leave name on a wrapped file; keep original but sanitize
             safe_name = file_obj.name.replace(" ", "_")
-            filename = f"{uuid.uuid4()}_{safe_name}"
+            filename = f"{uuid.uuid4()}_{safe_name}" if use_uuid_prefix else safe_name
             key = f"user_uploads/{user_id}/{filename}"
 
             try:
@@ -61,6 +61,54 @@ class S3Service:
                 uploaded.append({"error": f"Failed to upload {safe_name}"})
 
         return uploaded
+
+    def upload_video_file(self, file_obj, user_id):
+        """
+        Upload a single video file for a user and return key/url metadata.
+        """
+        safe_name = file_obj.name.replace(" ", "_")
+        filename = f"{uuid.uuid4()}_{safe_name}"
+        key = f"user_videos/{user_id}/{filename}"
+        content_type = getattr(file_obj, "content_type", None) or "application/octet-stream"
+
+        try:
+            try:
+                file_obj.seek(0, os.SEEK_SET)
+            except Exception:
+                pass
+
+            self.s3_client.upload_fileobj(
+                Fileobj=file_obj,
+                Bucket=self.bucket_name,
+                Key=key,
+                ExtraArgs={
+                    "ContentType": content_type,
+                    "ContentDisposition": f'inline; filename="{safe_name}"',
+                    "ACL": "private",
+                },
+            )
+            return {
+                "key": key,
+                "url": f"https://{self.bucket_name}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{key}",
+                "name": safe_name,
+            }
+        except ClientError as e:
+            print(f"Video upload error ({safe_name}):", e)
+            return {"error": f"Failed to upload {safe_name}"}
+
+    def generate_presigned_get_url(self, key, expires_in=3600, download_filename=None):
+        try:
+            params = {"Bucket": self.bucket_name, "Key": key}
+            if download_filename:
+                params["ResponseContentDisposition"] = f'attachment; filename="{download_filename}"'
+            return self.s3_client.generate_presigned_url(
+                "get_object",
+                Params=params,
+                ExpiresIn=expires_in,
+            )
+        except Exception as e:
+            print(f"Presigned URL error ({key}):", e)
+            return None
 
 
     def list_user_files(self, user_id):
@@ -126,6 +174,3 @@ class S3Service:
                 results.append({"key": key, "status": "error"})
 
         return results
-
-
-

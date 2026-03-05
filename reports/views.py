@@ -16,12 +16,23 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.generics import ListAPIView
 from collections import defaultdict
 import re
+from urllib.parse import urlparse
 
 from reports.models import AthleteReport, VideoUrl
-from reports.serializers import VideoUrlSerializer, VideoUrlReadSerializer
+from reports.serializers import VideoUrlSerializer, VideoUrlReadSerializer, VideoUploadSerializer
 
 # add imports at the top of reports/views.py
 from users.credit_service import reserve_credit, commit_credit, CreditCommitError
+
+
+def _extract_s3_key_from_url(raw_url: str):
+    if not raw_url:
+        return None
+    parsed = urlparse(raw_url)
+    if not parsed.netloc.endswith("amazonaws.com"):
+        return None
+    key = (parsed.path or "").lstrip("/")
+    return key or None
 
 
 class UploadExcelFileView(APIView):
@@ -410,25 +421,104 @@ class UploadVideoUrlView(APIView):
         serializer = VideoUrlSerializer(data=request.data)
         if serializer.is_valid():
             video_url = serializer.validated_data['video_url']
+            s3_key = _extract_s3_key_from_url(video_url)
 
             # Get existing or create new
             obj, created = VideoUrl.objects.get_or_create(
                 user=request.user,
                 url=video_url,
+                defaults={"s3_key": s3_key},
             )
+            if not created and s3_key and not obj.s3_key:
+                obj.s3_key = s3_key
+                obj.save(update_fields=["s3_key"])
+
+            read_payload = VideoUrlReadSerializer(obj).data
 
             if created:
                 return Response(
-                    {"message": "Video URL saved successfully", "id": obj.id, "url": obj.url},
+                    {"message": "Video URL saved successfully", **read_payload},
                     status=status.HTTP_201_CREATED
                 )
             else:
                 return Response(
-                    {"message": "Video URL already exists", "id": obj.id, "url": obj.url},
+                    {"message": "Video URL already exists", **read_payload},
                     status=status.HTTP_200_OK
                 )
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class UploadVideoFileView(APIView):
+    parser_classes = [MultiPartParser]
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    @swagger_auto_schema(
+        operation_description="Upload a video file to S3, save URL in DB, and return the saved URL/id.",
+        manual_parameters=[
+            openapi.Parameter(
+                name="video",
+                in_=openapi.IN_FORM,
+                type=openapi.TYPE_FILE,
+                required=True,
+                description="Video file to upload",
+            ),
+        ],
+        responses={201: "Uploaded", 400: "Bad request", 500: "Server error"},
+    )
+    def post(self, request):
+        serializer = VideoUploadSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        video_file = serializer.validated_data["video"]
+        file_name = (video_file.name or "").lower()
+        allowed_ext = (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")
+        if not file_name.endswith(allowed_ext):
+            return Response({"error": "Unsupported video format."}, status=status.HTTP_400_BAD_REQUEST)
+
+        s3 = S3Service()
+        upload_result = s3.upload_video_file(video_file, user_id=request.user.id)
+        if not upload_result or "key" not in upload_result:
+            return Response({"error": "Failed to upload video to storage."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        video_url = upload_result["url"]
+        obj, created = VideoUrl.objects.get_or_create(
+            user=request.user,
+            url=video_url,
+            defaults={
+                "s3_key": upload_result.get("key"),
+                "file_name": upload_result.get("name"),
+                "content_type": getattr(video_file, "content_type", None),
+                "file_size_bytes": getattr(video_file, "size", None),
+            },
+        )
+        if not created:
+            dirty = False
+            if not obj.s3_key and upload_result.get("key"):
+                obj.s3_key = upload_result["key"]
+                dirty = True
+            if not obj.file_name and upload_result.get("name"):
+                obj.file_name = upload_result["name"]
+                dirty = True
+            if not obj.content_type and getattr(video_file, "content_type", None):
+                obj.content_type = video_file.content_type
+                dirty = True
+            if not obj.file_size_bytes and getattr(video_file, "size", None):
+                obj.file_size_bytes = video_file.size
+                dirty = True
+            if dirty:
+                obj.save(update_fields=["s3_key", "file_name", "content_type", "file_size_bytes"])
+
+        read_payload = VideoUrlReadSerializer(obj).data
+        return Response(
+            {
+                "status": "success",
+                "message": "Video uploaded successfully" if created else "Video already exists",
+                **read_payload,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
 
 
 class DefaultPagination(PageNumberPagination):

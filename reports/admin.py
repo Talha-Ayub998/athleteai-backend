@@ -1,5 +1,11 @@
 from django.contrib import admin
-from .models import AthleteReport, VideoUrl
+from .models import (
+    AnnotationEvent,
+    AnnotationMatchResult,
+    AnnotationSession,
+    AthleteReport,
+    VideoUrl,
+)
 
 @admin.register(AthleteReport)
 class AthleteReportAdmin(admin.ModelAdmin):
@@ -11,7 +17,31 @@ class AthleteReportAdmin(admin.ModelAdmin):
 
 @admin.register(VideoUrl)
 class VideoUrlAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "url", "created_at")
+    list_display = ("id", "user", "url", "s3_key", "file_name", "created_at")
     list_filter = ("created_at", "user")
-    search_fields = ("url", "user__email")
+    search_fields = ("url", "s3_key", "file_name", "user__email")
     ordering = ("-created_at",)
+
+
+@admin.register(AnnotationSession)
+class AnnotationSessionAdmin(admin.ModelAdmin):
+    list_display = ("id", "user", "status", "video_url", "generated_report", "created_at", "finalized_at")
+    list_filter = ("status", "created_at")
+    search_fields = ("user__email", "title", "video_url")
+    ordering = ("-created_at",)
+
+
+@admin.register(AnnotationEvent)
+class AnnotationEventAdmin(admin.ModelAdmin):
+    list_display = ("id", "session", "match_number", "timestamp_seconds", "player", "event_type", "move_name", "outcome")
+    list_filter = ("event_type", "player", "match_number", "created_at")
+    search_fields = ("session__user__email", "move_name", "note")
+    ordering = ("session_id", "match_number", "timestamp_seconds")
+
+
+@admin.register(AnnotationMatchResult)
+class AnnotationMatchResultAdmin(admin.ModelAdmin):
+    list_display = ("id", "session", "match_number", "result", "match_type", "referee_decision", "disqualified")
+    list_filter = ("result", "match_type", "referee_decision", "disqualified", "created_at")
+    search_fields = ("session__user__email", "opponent")
+    ordering = ("session_id", "match_number")
