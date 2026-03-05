@@ -106,7 +106,7 @@ def stripe_webhook(request):
     logger.info("Stripe webhook received: %s", etype)
 
     # 1) Checkout completed (subscription or one-time)
-    if etype == "checkout.session.completed":
+    if etype in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
         session = data
         mode = session.get("mode")
         user = _find_user_for_session(session)
@@ -177,7 +177,11 @@ def stripe_webhook(request):
                 # One-time purchase (e.g., PDF report)
                 pi = session.get("payment_intent")
                 amount_total = session.get("amount_total")  # cents
-                if pi and not ReportPurchase.objects.filter(stripe_payment_intent=pi).exists():
+                payment_confirmed = (
+                    session.get("payment_status") == "paid"
+                    or etype == "checkout.session.async_payment_succeeded"
+                )
+                if payment_confirmed and pi and not ReportPurchase.objects.filter(stripe_payment_intent=pi).exists():
                     ReportPurchase.objects.create(
                         user=user,
                         stripe_payment_intent=pi,

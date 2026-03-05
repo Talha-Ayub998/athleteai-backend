@@ -4,6 +4,11 @@ from django.db import transaction
 from users.models import Subscription, ReportPurchase
 from users.subscription_limits import remaining_subscription_credits
 
+
+class CreditCommitError(Exception):
+    """Raised when credit cannot be safely consumed at commit time."""
+
+
 @dataclass
 class CreditTicket:
     source: str               # "one_time" | "subscription"
@@ -44,15 +49,24 @@ def commit_credit(ticket: CreditTicket):
     """Consume the reserved credit after successful report creation."""
     if ticket.source == "one_time":
         rp = ReportPurchase.objects.select_for_update().get(id=ticket.purchase_id)
-        if not rp.consumed:
-            from django.utils import timezone
-            rp.consumed = True
-            rp.consumed_at = timezone.now()
-            rp.save(update_fields=["consumed", "consumed_at"])
+        if rp.consumed:
+            raise CreditCommitError("One-time credit is no longer available.")
+
+        from django.utils import timezone
+        rp.consumed = True
+        rp.consumed_at = timezone.now()
+        rp.save(update_fields=["consumed", "consumed_at"])
         return
 
-    # subscription usage (consume `units`)
-    from users.models import Subscription
+    # Subscription usage: enforce availability at commit time under row lock.
     sub = Subscription.objects.select_for_update().get(user_id=ticket.user_id)
-    sub.period_usage = (sub.period_usage or 0) + int(ticket.units)
+    units = int(ticket.units)
+    if units <= 0:
+        raise CreditCommitError("Invalid credit usage.")
+
+    remaining = remaining_subscription_credits(sub)
+    if remaining < units:
+        raise CreditCommitError("Not enough subscription credits remaining.")
+
+    sub.period_usage = (sub.period_usage or 0) + units
     sub.save(update_fields=["period_usage"])
