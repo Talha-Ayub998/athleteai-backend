@@ -9,9 +9,8 @@ media/
 staticfiles/
 *.log
 
-# Django migrations (optional: remove if you want to commit them)
-**/migrations/*.py
-!**/migrations/__init__.py
+# Django migrations (track migration files)
+# Keep __pycache__ ignored via the Python cache rule above.
 
 # Virtual environment
 venv/
