@@ -476,6 +476,26 @@ class UploadVideoFileView(APIView):
         allowed_ext = (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")
         if not file_name.endswith(allowed_ext):
             return Response({"error": "Unsupported video format."}, status=status.HTTP_400_BAD_REQUEST)
+        content_type = (getattr(video_file, "content_type", "") or "").lower().strip()
+        if not content_type.startswith("video/"):
+            return Response({"error": "Only video files are allowed."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            file_hash = get_file_hash(video_file)
+            video_file.seek(0)
+        except Exception:
+            return Response({"error": "Failed to read uploaded video file."}, status=status.HTTP_400_BAD_REQUEST)
+
+        duplicate = VideoUrl.objects.filter(user=request.user, file_hash=file_hash).first()
+        if duplicate:
+            return Response(
+                {
+                    "status": "duplicate",
+                    "message": "This video has already been uploaded.",
+                    **VideoUrlReadSerializer(duplicate).data,
+                },
+                status=status.HTTP_200_OK,
+            )
 
         s3 = S3Service()
         upload_result = s3.upload_video_file(video_file, user_id=request.user.id)
@@ -489,8 +509,9 @@ class UploadVideoFileView(APIView):
             defaults={
                 "s3_key": upload_result.get("key"),
                 "file_name": upload_result.get("name"),
-                "content_type": getattr(video_file, "content_type", None),
+                "content_type": content_type or None,
                 "file_size_bytes": getattr(video_file, "size", None),
+                "file_hash": file_hash,
             },
         )
         if not created:
@@ -502,13 +523,16 @@ class UploadVideoFileView(APIView):
                 obj.file_name = upload_result["name"]
                 dirty = True
             if not obj.content_type and getattr(video_file, "content_type", None):
-                obj.content_type = video_file.content_type
+                obj.content_type = content_type or video_file.content_type
                 dirty = True
             if not obj.file_size_bytes and getattr(video_file, "size", None):
                 obj.file_size_bytes = video_file.size
                 dirty = True
+            if not obj.file_hash and file_hash:
+                obj.file_hash = file_hash
+                dirty = True
             if dirty:
-                obj.save(update_fields=["s3_key", "file_name", "content_type", "file_size_bytes"])
+                obj.save(update_fields=["s3_key", "file_name", "content_type", "file_size_bytes", "file_hash"])
 
         read_payload = VideoUrlReadSerializer(obj).data
         return Response(

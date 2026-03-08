@@ -29,6 +29,7 @@ class VideoUrlReadSerializer(serializers.ModelSerializer):
             "file_name",
             "content_type",
             "file_size_bytes",
+            "file_hash",
             "playback_url",
             "created_at",
         )

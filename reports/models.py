@@ -23,6 +23,7 @@ class VideoUrl(models.Model):
     file_name = models.CharField(max_length=255, blank=True, null=True)
     content_type = models.CharField(max_length=100, blank=True, null=True)
     file_size_bytes = models.BigIntegerField(blank=True, null=True)
+    file_hash = models.CharField(max_length=64, blank=True, null=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

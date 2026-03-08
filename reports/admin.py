@@ -17,9 +17,9 @@ class AthleteReportAdmin(admin.ModelAdmin):
 
 @admin.register(VideoUrl)
 class VideoUrlAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "url", "s3_key", "file_name", "created_at")
+    list_display = ("id", "user", "url", "s3_key", "file_name", "file_hash", "created_at")
     list_filter = ("created_at", "user")
-    search_fields = ("url", "s3_key", "file_name", "user__email")
+    search_fields = ("url", "s3_key", "file_name", "file_hash", "user__email")
     ordering = ("-created_at",)
 
 
