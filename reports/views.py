@@ -540,6 +540,37 @@ class ListUserVideoUrlsView(ListAPIView):
         return qs
 
 
+class DeleteUserVideoView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    @swagger_auto_schema(
+        operation_description="Delete one of the authenticated user's uploaded videos from S3 and DB.",
+        responses={200: "Deleted", 404: "Not found"},
+    )
+    def delete(self, request, video_id):
+        video = VideoUrl.objects.filter(id=video_id, user=request.user).first()
+        if not video:
+            return Response({"error": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        s3_key = video.s3_key or _extract_s3_key_from_url(video.url)
+        s3_results = []
+        if s3_key:
+            s3 = S3Service()
+            s3_results = s3.delete_files([s3_key])
+
+        video.delete()
+        return Response(
+            {
+                "status": "success",
+                "message": "Video deleted successfully.",
+                "video_id": video_id,
+                "s3_key": s3_key,
+                "s3_results": s3_results,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class ReportKPIsView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
