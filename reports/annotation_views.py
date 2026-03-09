@@ -170,6 +170,15 @@ class AnnotationSessionListCreateView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
     def get(self, request):
+        if request.body and request.body.strip():
+            return Response(
+                {
+                    "error": "GET /annotation-sessions/ does not accept a request body.",
+                    "hint": "Use POST /annotation-sessions/ to create a session.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         queryset = (
             AnnotationSession.objects.filter(user=request.user)
             .annotate(
