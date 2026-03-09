@@ -167,6 +167,26 @@ def _build_workbook_bytes(athlete_profile, stats_counters, match_numbers, match_
     return output.getvalue()
 
 
+def _missing_previous_match_results(session, target_match_number):
+    if target_match_number <= 1:
+        return []
+
+    previous_event_matches = set(
+        session.events.filter(match_number__lt=target_match_number)
+        .values_list("match_number", flat=True)
+        .distinct()
+    )
+    if not previous_event_matches:
+        return []
+
+    existing_results = set(
+        session.match_results.filter(match_number__in=previous_event_matches)
+        .values_list("match_number", flat=True)
+        .distinct()
+    )
+    return sorted(previous_event_matches - existing_results)
+
+
 class AnnotationSessionListCreateView(APIView):
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
 
@@ -286,6 +306,19 @@ class AnnotationEventCreateView(APIView):
         serializer = AnnotationEventSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        match_number = serializer.validated_data["match_number"]
+        missing_previous = _missing_previous_match_results(session, match_number)
+        if missing_previous:
+            return Response(
+                {
+                    "error": "Previous match results are missing.",
+                    "missing_match_numbers": missing_previous,
+                    "message": f"Create match-results for Match-{missing_previous[0]} before moving to Match-{match_number}.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer.save(session=session)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -307,6 +340,19 @@ class AnnotationEventDetailView(APIView):
         serializer = AnnotationEventSerializer(event, data=request.data, partial=True)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        match_number = serializer.validated_data.get("match_number", event.match_number)
+        missing_previous = _missing_previous_match_results(session, match_number)
+        if missing_previous:
+            return Response(
+                {
+                    "error": "Previous match results are missing.",
+                    "missing_match_numbers": missing_previous,
+                    "message": f"Create match-results for Match-{missing_previous[0]} before moving to Match-{match_number}.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
 
