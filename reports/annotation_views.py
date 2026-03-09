@@ -19,6 +19,7 @@ from reports.models import (
     AnnotationMatchResult,
     AnnotationSession,
     AthleteReport,
+    VideoUrl,
 )
 from reports.serializers import (
     AnnotationEventSerializer,
@@ -181,21 +182,55 @@ class AnnotationSessionListCreateView(APIView):
 
         queryset = (
             AnnotationSession.objects.filter(user=request.user)
+            .select_related("video")
             .annotate(
                 events_count=Count("events", distinct=True),
                 match_results_count=Count("match_results", distinct=True),
             )
             .order_by("-created_at")
         )
-        serializer = AnnotationSessionSerializer(queryset, many=True)
+        serializer = AnnotationSessionSerializer(queryset, many=True, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
-        serializer = AnnotationSessionSerializer(data=request.data)
+        serializer = AnnotationSessionSerializer(data=request.data, context={"request": request})
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         serializer.save(user=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class AnnotationLatestSessionByVideoView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    def get(self, request):
+        video_id = request.query_params.get("video_id")
+        queryset = (
+            AnnotationSession.objects
+            .filter(user=request.user, video__isnull=False)
+            .select_related("video")
+            .annotate(
+                events_count=Count("events", distinct=True),
+                match_results_count=Count("match_results", distinct=True),
+            )
+            .order_by("-created_at", "-id")
+        )
+
+        if video_id is not None:
+            try:
+                video_id_int = int(video_id)
+            except (TypeError, ValueError):
+                return Response({"error": "video_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            queryset = queryset.filter(video_id=video_id_int)
+
+        latest_by_video = {}
+        for session in queryset:
+            if session.video_id not in latest_by_video:
+                latest_by_video[session.video_id] = session
+
+        sessions = list(latest_by_video.values())
+        serializer = AnnotationSessionSerializer(sessions, many=True, context={"request": request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
 
 class AnnotationSessionDetailView(APIView):
@@ -206,7 +241,7 @@ class AnnotationSessionDetailView(APIView):
         if not session:
             return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        session_data = AnnotationSessionSerializer(session).data
+        session_data = AnnotationSessionSerializer(session, context={"request": request}).data
         events_data = AnnotationEventSerializer(session.events.all().order_by("match_number", "timestamp_seconds", "id"), many=True).data
         match_results_data = AnnotationMatchResultSerializer(session.match_results.all().order_by("match_number"), many=True).data
 
@@ -226,7 +261,12 @@ class AnnotationSessionDetailView(APIView):
         if session.status != AnnotationSession.STATUS_DRAFT:
             return Response({"error": "Completed sessions cannot be edited."}, status=status.HTTP_409_CONFLICT)
 
-        serializer = AnnotationSessionSerializer(session, data=request.data, partial=True)
+        serializer = AnnotationSessionSerializer(
+            session,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         serializer.save()

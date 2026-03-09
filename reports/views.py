@@ -8,7 +8,7 @@ from utils.helpers import get_file_hash
 from rest_framework import status
 from drf_yasg.utils import swagger_auto_schema
 from drf_yasg import openapi
-from django.db.models import Q
+from django.db.models import Q, OuterRef, Subquery
 from django.db import transaction, IntegrityError
 from users.models import CustomUser
 from athleteai.permissions import BlockSuperUserPermission
@@ -18,7 +18,7 @@ from collections import defaultdict
 import re
 from urllib.parse import urlparse
 
-from reports.models import AthleteReport, VideoUrl
+from reports.models import AthleteReport, VideoUrl, AnnotationSession
 from reports.serializers import VideoUrlSerializer, VideoUrlReadSerializer, VideoUploadSerializer
 
 # add imports at the top of reports/views.py
@@ -557,7 +557,23 @@ class ListUserVideoUrlsView(ListAPIView):
     pagination_class = DefaultPagination
 
     def get_queryset(self):
-        qs = VideoUrl.objects.filter(user=self.request.user).order_by("-created_at")
+        latest_session_qs = (
+            AnnotationSession.objects
+            .filter(user_id=OuterRef("user_id"))
+            .filter(Q(video_id=OuterRef("pk")) | Q(video_id__isnull=True, video_url=OuterRef("url")))
+            .order_by("-created_at", "-id")
+        )
+
+        qs = (
+            VideoUrl.objects
+            .filter(user=self.request.user)
+            .annotate(
+                latest_session_id=Subquery(latest_session_qs.values("id")[:1]),
+                latest_session_status=Subquery(latest_session_qs.values("status")[:1]),
+                latest_session_updated_at=Subquery(latest_session_qs.values("updated_at")[:1]),
+            )
+            .order_by("-created_at")
+        )
         q = self.request.query_params.get("q")
         if q:
             qs = qs.filter(Q(url__icontains=q))

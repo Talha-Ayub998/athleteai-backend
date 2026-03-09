@@ -19,6 +19,9 @@ class VideoUploadSerializer(serializers.Serializer):
 
 class VideoUrlReadSerializer(serializers.ModelSerializer):
     playback_url = serializers.SerializerMethodField()
+    session_id = serializers.IntegerField(source="latest_session_id", read_only=True, allow_null=True)
+    session_status = serializers.CharField(source="latest_session_status", read_only=True, allow_null=True)
+    session_updated_at = serializers.DateTimeField(source="latest_session_updated_at", read_only=True, allow_null=True)
 
     class Meta:
         model = VideoUrl
@@ -30,6 +33,9 @@ class VideoUrlReadSerializer(serializers.ModelSerializer):
             "content_type",
             "file_size_bytes",
             "file_hash",
+            "session_id",
+            "session_status",
+            "session_updated_at",
             "playback_url",
             "created_at",
         )
@@ -59,12 +65,19 @@ class VideoUrlReadSerializer(serializers.ModelSerializer):
 class AnnotationSessionSerializer(serializers.ModelSerializer):
     events_count = serializers.SerializerMethodField()
     match_results_count = serializers.SerializerMethodField()
+    video_id = serializers.PrimaryKeyRelatedField(
+        source="video",
+        queryset=VideoUrl.objects.all(),
+        required=False,
+        allow_null=True,
+    )
 
     class Meta:
         model = AnnotationSession
         fields = (
             "id",
             "title",
+            "video_id",
             "video_url",
             "status",
             "finalized_at",
@@ -75,6 +88,27 @@ class AnnotationSessionSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = ("status", "finalized_at", "generated_report", "created_at", "updated_at")
+
+    def validate_video(self, value):
+        request = self.context.get("request")
+        if request and value and value.user_id != request.user.id:
+            raise serializers.ValidationError("Selected video does not belong to the authenticated user.")
+        return value
+
+    def validate(self, attrs):
+        video = attrs.get("video", getattr(self.instance, "video", None))
+        video_url = attrs.get("video_url", getattr(self.instance, "video_url", None))
+
+        if video and video_url and str(video_url).strip() != str(video.url).strip():
+            raise serializers.ValidationError(
+                {"video_url": "video_url must match the selected video_id URL."}
+            )
+
+        # If frontend only sends video_id, keep the legacy URL snapshot in sync.
+        if video and "video_url" not in attrs:
+            attrs["video_url"] = video.url
+
+        return attrs
 
     def get_events_count(self, obj):
         val = getattr(obj, "events_count", None)

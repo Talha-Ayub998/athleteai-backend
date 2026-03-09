@@ -6,6 +6,7 @@ from .annotation_views import (
     AnnotationEventCreateView,
     AnnotationEventDetailView,
     AnnotationFinalizeView,
+    AnnotationLatestSessionByVideoView,
     AnnotationMatchResultDetailView,
     AnnotationMatchResultListCreateView,
     AnnotationSessionDownloadXlsxView,
@@ -23,6 +24,11 @@ urlpatterns = [
     path('my-video-urls/<int:video_id>/', DeleteUserVideoView.as_view(), name='delete-video-url'),
     path('kpis/', ReportKPIsView.as_view(), name='report-kpis"'),
     path("annotation-sessions/", AnnotationSessionListCreateView.as_view(), name="annotation-session-list-create"),
+    path(
+        "annotation-sessions/latest-by-video/",
+        AnnotationLatestSessionByVideoView.as_view(),
+        name="annotation-latest-session-by-video",
+    ),
     path("annotation-sessions/<int:session_id>/", AnnotationSessionDetailView.as_view(), name="annotation-session-detail"),
     path("annotation-sessions/<int:session_id>/events/", AnnotationEventCreateView.as_view(), name="annotation-event-create"),
     path(

@@ -25,9 +25,9 @@ class VideoUrlAdmin(admin.ModelAdmin):
 
 @admin.register(AnnotationSession)
 class AnnotationSessionAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "status", "video_url", "generated_report", "created_at", "finalized_at")
+    list_display = ("id", "user", "status", "video", "video_url", "generated_report", "created_at", "finalized_at")
     list_filter = ("status", "created_at")
-    search_fields = ("user__email", "title", "video_url")
+    search_fields = ("user__email", "title", "video_url", "video__file_name", "video__url")
     ordering = ("-created_at",)
 
 
