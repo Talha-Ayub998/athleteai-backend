@@ -25,10 +25,15 @@ class VideoUrlAdmin(admin.ModelAdmin):
 
 @admin.register(AnnotationSession)
 class AnnotationSessionAdmin(admin.ModelAdmin):
-    list_display = ("id", "user", "status", "video", "video_url", "generated_report", "created_at", "finalized_at")
+    list_display = ("id", "user", "status", "video_id_value", "video", "video_url", "generated_report", "created_at", "finalized_at")
     list_filter = ("status", "created_at")
     search_fields = ("user__email", "title", "video_url", "video__file_name", "video__url")
     ordering = ("-created_at",)
+
+    def video_id_value(self, obj):
+        return obj.video_id
+
+    video_id_value.short_description = "Video ID"
 
 
 @admin.register(AnnotationEvent)
