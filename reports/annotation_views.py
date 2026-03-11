@@ -171,20 +171,14 @@ def _missing_previous_match_results(session, target_match_number):
     if target_match_number <= 1:
         return []
 
-    previous_event_matches = set(
-        session.events.filter(match_number__lt=target_match_number)
-        .values_list("match_number", flat=True)
-        .distinct()
-    )
-    if not previous_event_matches:
-        return []
+    required_previous_matches = set(range(1, target_match_number))
 
     existing_results = set(
-        session.match_results.filter(match_number__in=previous_event_matches)
+        session.match_results.filter(match_number__lt=target_match_number, match_number__gte=1)
         .values_list("match_number", flat=True)
         .distinct()
     )
-    return sorted(previous_event_matches - existing_results)
+    return sorted(required_previous_matches - existing_results)
 
 
 class AnnotationSessionListCreateView(APIView):
