@@ -387,9 +387,21 @@ class AnnotationMatchResultListCreateView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         payload = serializer.validated_data
+        match_number = payload["match_number"]
+        has_events_for_match = session.events.filter(match_number=match_number).exists()
+        existing_result = session.match_results.filter(match_number=match_number).first()
+        if not has_events_for_match and not existing_result:
+            return Response(
+                {
+                    "error": "Cannot create match result without events.",
+                    "message": f"Add at least one event for Match-{match_number} before creating its result.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         obj, created = AnnotationMatchResult.objects.update_or_create(
             session=session,
-            match_number=payload["match_number"],
+            match_number=match_number,
             defaults={
                 "result": payload["result"],
                 "match_type": payload.get("match_type") or "No-GI Points",
@@ -422,6 +434,18 @@ class AnnotationMatchResultDetailView(APIView):
         serializer = AnnotationMatchResultSerializer(obj, data=request.data, partial=True)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        target_match_number = serializer.validated_data.get("match_number", obj.match_number)
+        has_events_for_target = session.events.filter(match_number=target_match_number).exists()
+        if not has_events_for_target:
+            return Response(
+                {
+                    "error": "Cannot save match result without events.",
+                    "message": f"Add at least one event for Match-{target_match_number} before saving its result.",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         serializer.save()
         return Response(serializer.data, status=status.HTTP_200_OK)
 
