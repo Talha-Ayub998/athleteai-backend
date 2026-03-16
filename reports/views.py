@@ -35,6 +35,14 @@ def _extract_s3_key_from_url(raw_url: str):
     return key or None
 
 
+def _normalize_errors(raw_errors):
+    if raw_errors is None:
+        return []
+    if isinstance(raw_errors, list):
+        return [str(err) for err in raw_errors]
+    return [str(raw_errors)]
+
+
 class UploadExcelFileView(APIView):
     parser_classes = [MultiPartParser]
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
@@ -200,7 +208,11 @@ class UploadExcelFileView(APIView):
 
             if not success:
                 return Response(
-                    {"status": "error", "message": "Validation failed.", "errors": result},
+                    {
+                        "status": "error",
+                        "message": "Validation failed.",
+                        "errors": _normalize_errors(result),
+                    },
                     status=400,
                 )
 

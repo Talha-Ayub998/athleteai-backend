@@ -36,6 +36,14 @@ def _session_for_user_or_404(session_id, user):
     return AnnotationSession.objects.filter(id=session_id, user=user).first()
 
 
+def _normalize_errors(raw_errors):
+    if raw_errors is None:
+        return []
+    if isinstance(raw_errors, list):
+        return [str(err) for err in raw_errors]
+    return [str(raw_errors)]
+
+
 def _normalize_athlete_profile(user, payload):
     payload = payload or {}
     fallback_name = (getattr(user, "username", "") or "").strip() or user.email.split("@")[0]
@@ -592,7 +600,11 @@ class AnnotationFinalizeView(APIView):
         result, success = processed[0], processed[1]
         if not success:
             return Response(
-                {"status": "error", "message": "Validation failed.", "errors": result},
+                {
+                    "status": "error",
+                    "message": "Validation failed.",
+                    "errors": _normalize_errors(result),
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

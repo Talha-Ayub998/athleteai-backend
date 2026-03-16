@@ -718,6 +718,19 @@ def check_missing_sheets(xls, context):
             context["has_errors"] = True
 
 
+def check_empty_match_sheets(xls, context):
+    for sheet_name in xls.sheet_names:
+        if "Match-" not in sheet_name:
+            continue
+        if "Stats" not in sheet_name and "Result" not in sheet_name:
+            continue
+
+        sheet_df = pd.read_excel(xls, sheet_name=sheet_name)
+        if sheet_df.dropna(how="all").empty:
+            context["errors"].append(f"{sheet_name} sheet is empty.")
+            context["has_errors"] = True
+
+
 def validate_move_names(stats_df, moves_df, context):
     valid_moves = moves_df['move_name'].tolist()
 
@@ -1016,7 +1029,13 @@ def process_excel_file(ATHLETE_FILE):
     # Validate and locate the Athlete sheet
     athlete_sheet = next((s for s in xls.sheet_names if "athlete" in s.lower()), None)
     if not athlete_sheet:
-        return "No sheet named 'Athlete' found in the Excel file.", False
+        return ["No sheet named 'Athlete' found in the Excel file."], False
+
+    check_missing_sheets(xls, context)
+    check_empty_match_sheets(xls, context)
+
+    if context["has_errors"]:
+        return context["errors"], False
 
     # 📊 Step 1: Load data from Excel and CSV
     athlete_name, athlete_language, stats_df, results_df, moves_df = load_data(moves_df, xls, athlete_sheet)
@@ -1025,7 +1044,6 @@ def process_excel_file(ATHLETE_FILE):
     win_method = compute_win_method_distribution(stats_df, results_df, moves_df)
 
     # ✅ Step 2: Run all validation checks
-    check_missing_sheets(xls, context)
     validate_move_names(matches_data['Stats'], moves_df, context)
     validate_and_clean_numeric_fields(matches_data['Stats'], context)
     validate_defense_attempts_vs_succeeds(matches_data['Stats'], context)
@@ -1035,15 +1053,7 @@ def process_excel_file(ATHLETE_FILE):
 
     # ⚠️ Step 3: Handle validation errors, if any
     if context["has_errors"]:
-        if athlete_name.endswith('s'):
-            title = f"{athlete_name}' Jiu Jitsu Report Failure. Input Data has {len(context['errors'])} errors."
-        else:
-            title = f"{athlete_name}'s Jiu Jitsu Report Failure. Input Data has {len(context['errors'])} errors."
-
-        body = title + "\n\n"
-        body += "Hi. Requested Jiu Jitsu Report has failed to generate. Input Data has the following errors:\n\n"
-        body += "\n".join(f"{index + 1}. {error}" for index, error in enumerate(context["errors"]))
-        return body, False
+        return context["errors"], False
 
     # 📊 Step 4: Group and prepare data for analysis
     grouped_df = prepare_grouped_data(stats_df, moves_df)
