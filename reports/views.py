@@ -15,6 +15,7 @@ from athleteai.permissions import BlockSuperUserPermission
 from rest_framework.pagination import PageNumberPagination
 from rest_framework.generics import ListAPIView
 from collections import defaultdict
+import mimetypes
 import re
 from urllib.parse import urlparse
 
@@ -488,9 +489,19 @@ class UploadVideoFileView(APIView):
         allowed_ext = (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")
         if not file_name.endswith(allowed_ext):
             return Response({"error": "Unsupported video format."}, status=status.HTTP_400_BAD_REQUEST)
-        content_type = (getattr(video_file, "content_type", "") or "").lower().strip()
+        raw_content_type = (getattr(video_file, "content_type", "") or "").lower().strip()
+        guessed_content_type = (mimetypes.guess_type(file_name)[0] or "").lower().strip()
+        content_type = raw_content_type or guessed_content_type
+        if raw_content_type and not raw_content_type.startswith("video/"):
+            return Response(
+                {"error": f"Only video files are allowed. Received content_type: {raw_content_type}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         if not content_type.startswith("video/"):
-            return Response({"error": "Only video files are allowed."}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"error": "Only video files are allowed. Could not detect a valid video MIME type."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         try:
             file_hash = get_file_hash(video_file)
