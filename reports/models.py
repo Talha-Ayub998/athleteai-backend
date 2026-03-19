@@ -100,6 +100,8 @@ class AnnotationEvent(models.Model):
     session = models.ForeignKey(AnnotationSession, on_delete=models.CASCADE, related_name="events")
     match_number = models.PositiveIntegerField()
     timestamp_seconds = models.FloatField()
+    start_time_seconds = models.FloatField(blank=True, null=True)
+    end_time_seconds = models.FloatField(blank=True, null=True)
     player = models.CharField(max_length=20, choices=PLAYER_CHOICES)
     event_type = models.CharField(max_length=20, choices=EVENT_TYPE_CHOICES)
     move_name = models.CharField(max_length=255, blank=True, null=True)

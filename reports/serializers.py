@@ -163,6 +163,9 @@ class AnnotationSessionSerializer(serializers.ModelSerializer):
 
 
 class AnnotationEventSerializer(serializers.ModelSerializer):
+    DEFAULT_CLIP_BEFORE_SECONDS = 2.0
+    DEFAULT_CLIP_AFTER_SECONDS = 2.0
+
     class Meta:
         model = AnnotationEvent
         fields = (
@@ -170,6 +173,8 @@ class AnnotationEventSerializer(serializers.ModelSerializer):
             "session",
             "match_number",
             "timestamp_seconds",
+            "start_time_seconds",
+            "end_time_seconds",
             "player",
             "event_type",
             "move_name",
@@ -188,12 +193,35 @@ class AnnotationEventSerializer(serializers.ModelSerializer):
         note = attrs.get("note", getattr(self.instance, "note", None))
         match_number = attrs.get("match_number", getattr(self.instance, "match_number", None))
         timestamp = attrs.get("timestamp_seconds", getattr(self.instance, "timestamp_seconds", None))
+        start_time = attrs.get("start_time_seconds", getattr(self.instance, "start_time_seconds", None))
+        end_time = attrs.get("end_time_seconds", getattr(self.instance, "end_time_seconds", None))
 
         if match_number is None or int(match_number) < 1:
             raise serializers.ValidationError({"match_number": "Match number must be >= 1."})
 
         if timestamp is None or float(timestamp) < 0:
             raise serializers.ValidationError({"timestamp_seconds": "Timestamp must be >= 0."})
+        timestamp = float(timestamp)
+
+        if start_time is None:
+            start_time = max(0.0, timestamp - self.DEFAULT_CLIP_BEFORE_SECONDS)
+        if end_time is None:
+            end_time = timestamp + self.DEFAULT_CLIP_AFTER_SECONDS
+
+        start_time = float(start_time)
+        end_time = float(end_time)
+        if start_time < 0:
+            raise serializers.ValidationError({"start_time_seconds": "start_time_seconds must be >= 0."})
+        if end_time < start_time:
+            raise serializers.ValidationError({"end_time_seconds": "end_time_seconds must be >= start_time_seconds."})
+        if timestamp < start_time or timestamp > end_time:
+            raise serializers.ValidationError(
+                {"timestamp_seconds": "timestamp_seconds must be between start_time_seconds and end_time_seconds."}
+            )
+
+        attrs["timestamp_seconds"] = timestamp
+        attrs["start_time_seconds"] = start_time
+        attrs["end_time_seconds"] = end_time
 
         if event_type == AnnotationEvent.EVENT_NOTE:
             if not note and not move_name:
