@@ -509,7 +509,12 @@ class UploadVideoFileView(APIView):
         except Exception:
             return Response({"error": "Failed to read uploaded video file."}, status=status.HTTP_400_BAD_REQUEST)
 
-        duplicate = VideoUrl.objects.filter(user=request.user, file_hash=file_hash).first()
+        duplicate = (
+            VideoUrl.objects
+            .filter(user=request.user, file_hash=file_hash)
+            .order_by("created_at", "id")
+            .first()
+        )
         if duplicate:
             return Response(
                 {
