@@ -33,9 +33,9 @@ class ReportPurchaseInline(admin.TabularInline):
 # ---------- User ----------
 @admin.register(CustomUser)
 class CustomUserAdmin(BaseUserAdmin):
-    list_display = ("email", "username", "role", "is_active", "is_staff", "is_superuser", "date_joined", "last_login")
+    list_display = ("id", "email", "username", "role", "is_active", "is_staff", "is_superuser", "date_joined", "last_login")
     list_filter = ("role", "is_active", "is_staff", "is_superuser")
-    search_fields = ("email", "username")
+    search_fields = ("=id", "email", "username")
     ordering = ("email",)
 
     fieldsets = (
