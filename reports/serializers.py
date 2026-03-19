@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from urllib.parse import urlparse
+from django.db.models import Q
 from .models import (
     VideoUrl,
     AnnotationSession,
@@ -19,9 +20,9 @@ class VideoUploadSerializer(serializers.Serializer):
 
 class VideoUrlReadSerializer(serializers.ModelSerializer):
     playback_url = serializers.SerializerMethodField()
-    session_id = serializers.IntegerField(source="latest_session_id", read_only=True, allow_null=True)
-    session_status = serializers.CharField(source="latest_session_status", read_only=True, allow_null=True)
-    session_updated_at = serializers.DateTimeField(source="latest_session_updated_at", read_only=True, allow_null=True)
+    session_id = serializers.SerializerMethodField()
+    session_status = serializers.SerializerMethodField()
+    session_updated_at = serializers.SerializerMethodField()
 
     class Meta:
         model = VideoUrl
@@ -60,6 +61,44 @@ class VideoUrlReadSerializer(serializers.ModelSerializer):
             return s3.generate_presigned_get_url(key) or raw_url
         except Exception:
             return raw_url
+
+    def _get_latest_session_for_video(self, obj):
+        cache_attr = "_latest_session_cache"
+        if hasattr(obj, cache_attr):
+            return getattr(obj, cache_attr)
+
+        latest_id = getattr(obj, "latest_session_id", None)
+        latest_status = getattr(obj, "latest_session_status", None)
+        latest_updated_at = getattr(obj, "latest_session_updated_at", None)
+        if latest_id is not None or latest_status is not None or latest_updated_at is not None:
+            cached = {
+                "id": latest_id,
+                "status": latest_status,
+                "updated_at": latest_updated_at,
+            }
+            setattr(obj, cache_attr, cached)
+            return cached
+
+        latest = (
+            AnnotationSession.objects
+            .filter(user_id=obj.user_id)
+            .filter(Q(video_id=obj.id) | Q(video_id__isnull=True, video_url=obj.url))
+            .order_by("-created_at", "-id")
+            .values("id", "status", "updated_at")
+            .first()
+        )
+        cached = latest or {"id": None, "status": None, "updated_at": None}
+        setattr(obj, cache_attr, cached)
+        return cached
+
+    def get_session_id(self, obj):
+        return self._get_latest_session_for_video(obj).get("id")
+
+    def get_session_status(self, obj):
+        return self._get_latest_session_for_video(obj).get("status")
+
+    def get_session_updated_at(self, obj):
+        return self._get_latest_session_for_video(obj).get("updated_at")
 
 
 class AnnotationSessionSerializer(serializers.ModelSerializer):
