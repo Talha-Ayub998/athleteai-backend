@@ -218,6 +218,34 @@ class AnnotationSessionListCreateView(APIView):
         serializer = AnnotationSessionSerializer(data=request.data, context={"request": request})
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        validated = serializer.validated_data
+        video = validated.get("video")
+        video_url = validated.get("video_url")
+
+        existing_draft_qs = AnnotationSession.objects.filter(
+            user=request.user,
+            status=AnnotationSession.STATUS_DRAFT,
+        )
+        if video is not None:
+            existing_draft_qs = existing_draft_qs.filter(video=video)
+        elif video_url:
+            existing_draft_qs = existing_draft_qs.filter(video_url=video_url)
+        else:
+            existing_draft_qs = existing_draft_qs.none()
+
+        existing_draft = existing_draft_qs.order_by("-updated_at", "-id").first()
+        if existing_draft:
+            existing_payload = AnnotationSessionSerializer(existing_draft, context={"request": request}).data
+            return Response(
+                {
+                    "status": "existing_draft",
+                    "message": "Draft session already exists for this video. Reusing existing session.",
+                    **existing_payload,
+                },
+                status=status.HTTP_200_OK,
+            )
+
         serializer.save(user=request.user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
