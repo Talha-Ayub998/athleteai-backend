@@ -10,6 +10,7 @@ from .annotation_views import (
     AnnotationMatchResultDetailView,
     AnnotationMatchResultListCreateView,
     AnnotationSessionDownloadXlsxView,
+    AnnotationSessionReopenView,
     AnnotationSessionDetailView,
     AnnotationSessionListCreateView,
 )
@@ -55,5 +56,10 @@ urlpatterns = [
         "annotation-sessions/<int:session_id>/download-xlsx/",
         AnnotationSessionDownloadXlsxView.as_view(),
         name="annotation-session-download-xlsx",
+    ),
+    path(
+        "annotation-sessions/<int:session_id>/reopen/",
+        AnnotationSessionReopenView.as_view(),
+        name="annotation-session-reopen",
     ),
 ]

@@ -769,3 +769,67 @@ class AnnotationSessionDownloadXlsxView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class AnnotationSessionReopenView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    def post(self, request, session_id):
+        session = _session_for_user_or_404(session_id, request.user)
+        if not session:
+            return Response({"error": "Session not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if session.status == AnnotationSession.STATUS_DRAFT:
+            return Response(
+                {
+                    "status": "already_draft",
+                    "message": "Session is already in draft state.",
+                    "session_id": session.id,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        if session.status != AnnotationSession.STATUS_COMPLETED:
+            return Response(
+                {"error": "Only completed sessions can be reopened."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        report = session.generated_report
+        s3_key = getattr(report, "s3_key", None)
+        s3_results = []
+        if s3_key:
+            s3 = S3Service()
+            s3_results = s3.delete_files([s3_key])
+            has_s3_error = any((item or {}).get("status") == "error" for item in s3_results)
+            if has_s3_error:
+                return Response(
+                    {
+                        "error": "Failed to delete generated report file from storage.",
+                        "session_id": session.id,
+                        "report_id": getattr(report, "id", None),
+                        "s3_results": s3_results,
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+        deleted_report_id = getattr(report, "id", None)
+        with transaction.atomic():
+            session.status = AnnotationSession.STATUS_DRAFT
+            session.finalized_at = None
+            session.generated_report = None
+            session.save(update_fields=["status", "finalized_at", "generated_report", "updated_at"])
+            if report:
+                report.delete()
+
+        return Response(
+            {
+                "status": "success",
+                "message": "Session reopened. Generated report deleted and editing is enabled.",
+                "session_id": session.id,
+                "deleted_report_id": deleted_report_id,
+                "deleted_s3_key": s3_key,
+                "s3_results": s3_results,
+            },
+            status=status.HTTP_200_OK,
+        )
