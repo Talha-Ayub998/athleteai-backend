@@ -19,7 +19,7 @@ import mimetypes
 import re
 from urllib.parse import urlparse
 
-from reports.models import AthleteReport, VideoUrl, AnnotationSession
+from reports.models import AthleteReport, VideoUrl, AnnotationSession, AnnotationEvent, AnnotationMatchResult
 from reports.serializers import VideoUrlSerializer, VideoUrlReadSerializer, VideoUploadSerializer
 
 # add imports at the top of reports/views.py
@@ -620,13 +620,30 @@ class DeleteUserVideoView(APIView):
         if not video:
             return Response({"error": "Video not found."}, status=status.HTTP_404_NOT_FOUND)
 
+        related_sessions = (
+            AnnotationSession.objects
+            .filter(user=request.user)
+            .filter(Q(video_id=video.id) | Q(video_id__isnull=True, video_url=video.url))
+        )
+        related_session_ids = list(related_sessions.values_list("id", flat=True))
+        deleted_events_count = 0
+        deleted_match_results_count = 0
+        if related_session_ids:
+            deleted_events_count = AnnotationEvent.objects.filter(session_id__in=related_session_ids).count()
+            deleted_match_results_count = AnnotationMatchResult.objects.filter(session_id__in=related_session_ids).count()
+        deleted_sessions_count = len(related_session_ids)
+
         s3_key = video.s3_key or _extract_s3_key_from_url(video.url)
         s3_results = []
         if s3_key:
             s3 = S3Service()
             s3_results = s3.delete_files([s3_key])
 
-        video.delete()
+        with transaction.atomic():
+            if related_session_ids:
+                related_sessions.delete()
+            video.delete()
+
         return Response(
             {
                 "status": "success",
@@ -634,6 +651,9 @@ class DeleteUserVideoView(APIView):
                 "video_id": video_id,
                 "s3_key": s3_key,
                 "s3_results": s3_results,
+                "deleted_sessions_count": deleted_sessions_count,
+                "deleted_events_count": deleted_events_count,
+                "deleted_match_results_count": deleted_match_results_count,
             },
             status=status.HTTP_200_OK,
         )
