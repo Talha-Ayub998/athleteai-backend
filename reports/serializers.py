@@ -163,8 +163,26 @@ class AnnotationSessionSerializer(serializers.ModelSerializer):
 
 
 class AnnotationEventSerializer(serializers.ModelSerializer):
+    # Frontend can send UI categorization labels; backend normalizes to model choices.
+    event_type = serializers.CharField(max_length=50)
     DEFAULT_CLIP_BEFORE_SECONDS = 2.0
     DEFAULT_CLIP_AFTER_SECONDS = 2.0
+    EVENT_TYPE_ALIASES = {
+        "position": AnnotationEvent.EVENT_POSITION,
+        "neutral position": AnnotationEvent.EVENT_POSITION,
+        "top position": AnnotationEvent.EVENT_POSITION,
+        "bottom position": AnnotationEvent.EVENT_POSITION,
+        "chest to chest": AnnotationEvent.EVENT_POSITION,
+        "chest to back": AnnotationEvent.EVENT_POSITION,
+        "transition": AnnotationEvent.EVENT_TRANSITION,
+        "takedown": AnnotationEvent.EVENT_TRANSITION,
+        "sweep": AnnotationEvent.EVENT_TRANSITION,
+        "passing": AnnotationEvent.EVENT_TRANSITION,
+        "back take": AnnotationEvent.EVENT_TRANSITION,
+        "leg entry": AnnotationEvent.EVENT_TRANSITION,
+        "submission": AnnotationEvent.EVENT_SUBMISSION,
+        "note": AnnotationEvent.EVENT_NOTE,
+    }
 
     class Meta:
         model = AnnotationEvent
@@ -186,7 +204,7 @@ class AnnotationEventSerializer(serializers.ModelSerializer):
         read_only_fields = ("session", "created_at", "updated_at")
 
     def validate(self, attrs):
-        event_type = attrs.get("event_type", getattr(self.instance, "event_type", None))
+        event_type_raw = attrs.get("event_type", getattr(self.instance, "event_type", None))
         player = attrs.get("player", getattr(self.instance, "player", None))
         move_name = attrs.get("move_name", getattr(self.instance, "move_name", None))
         outcome = attrs.get("outcome", getattr(self.instance, "outcome", None))
@@ -195,6 +213,15 @@ class AnnotationEventSerializer(serializers.ModelSerializer):
         timestamp = attrs.get("timestamp_seconds", getattr(self.instance, "timestamp_seconds", None))
         start_time = attrs.get("start_time_seconds", getattr(self.instance, "start_time_seconds", None))
         end_time = attrs.get("end_time_seconds", getattr(self.instance, "end_time_seconds", None))
+
+        event_type_key = str(event_type_raw or "").strip().lower()
+        event_type = self.EVENT_TYPE_ALIASES.get(event_type_key)
+        if not event_type:
+            allowed = ", ".join(sorted(set(self.EVENT_TYPE_ALIASES.keys())))
+            raise serializers.ValidationError(
+                {"event_type": f'Unsupported event_type "{event_type_raw}". Allowed: {allowed}'}
+            )
+        attrs["event_type"] = event_type
 
         if match_number is None or int(match_number) < 1:
             raise serializers.ValidationError({"match_number": "Match number must be >= 1."})
