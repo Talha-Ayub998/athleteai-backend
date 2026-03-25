@@ -2,6 +2,7 @@
 import os
 import boto3
 from botocore.exceptions import ClientError
+from botocore.config import Config
 from dotenv import load_dotenv
 import uuid
 from datetime import datetime
@@ -15,6 +16,7 @@ class S3Service:
             aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
             aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
             region_name=os.getenv('AWS_REGION'),
+            config=Config(signature_version='s3v4'),
         )
         self.bucket_name = os.getenv('AWS_STORAGE_BUCKET_NAME')
 
@@ -95,6 +97,78 @@ class S3Service:
         except ClientError as e:
             print(f"Video upload error ({safe_name}):", e)
             return {"error": f"Failed to upload {safe_name}"}
+
+    def build_video_key(self, user_id, file_name):
+        safe_name = (file_name or "video").replace(" ", "_")
+        filename = f"{uuid.uuid4()}_{safe_name}"
+        return f"user_videos/{user_id}/{filename}"
+
+    def build_s3_public_url(self, key):
+        return f"https://{self.bucket_name}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{key}"
+
+    def create_multipart_upload(self, key, content_type=None, file_name=None):
+        extra_args = {"ACL": "private"}
+        if content_type:
+            extra_args["ContentType"] = content_type
+        if file_name:
+            safe_name = file_name.replace(" ", "_")
+            extra_args["ContentDisposition"] = f'inline; filename="{safe_name}"'
+
+        try:
+            response = self.s3_client.create_multipart_upload(
+                Bucket=self.bucket_name,
+                Key=key,
+                **extra_args,
+            )
+            return {"upload_id": response.get("UploadId"), "key": key}
+        except ClientError as e:
+            print(f"Create multipart upload error ({key}):", e)
+            return {"error": "Failed to create multipart upload."}
+
+    def generate_presigned_upload_part_url(self, key, upload_id, part_number, expires_in=3600):
+        try:
+            return self.s3_client.generate_presigned_url(
+                "upload_part",
+                Params={
+                    "Bucket": self.bucket_name,
+                    "Key": key,
+                    "UploadId": upload_id,
+                    "PartNumber": int(part_number),
+                },
+                ExpiresIn=expires_in,
+            )
+        except Exception as e:
+            print(f"Presigned upload part URL error ({key}, part {part_number}):", e)
+            return None
+
+    def complete_multipart_upload(self, key, upload_id, parts):
+        try:
+            response = self.s3_client.complete_multipart_upload(
+                Bucket=self.bucket_name,
+                Key=key,
+                UploadId=upload_id,
+                MultipartUpload={"Parts": parts},
+            )
+            return {
+                "key": key,
+                "url": response.get("Location") or self.build_s3_public_url(key),
+                "etag": response.get("ETag"),
+            }
+        except ClientError as e:
+            print(f"Complete multipart upload error ({key}):", e)
+            return {"error": "Failed to complete multipart upload."}
+
+    def abort_multipart_upload(self, key, upload_id):
+        try:
+            self.s3_client.abort_multipart_upload(
+                Bucket=self.bucket_name,
+                Key=key,
+                UploadId=upload_id,
+            )
+            return {"status": "aborted", "key": key, "upload_id": upload_id}
+        except ClientError as e:
+            print(f"Abort multipart upload error ({key}):", e)
+            return {"status": "error", "key": key, "upload_id": upload_id}
 
     def generate_presigned_get_url(self, key, expires_in=3600, download_filename=None):
         try:

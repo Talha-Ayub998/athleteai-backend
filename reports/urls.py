@@ -1,7 +1,9 @@
 from django.urls import path
 from .views import UploadExcelFileView, ListUserReportsView, \
                     DeleteUserFileView, UploadVideoUrlView, \
-                    ListUserVideoUrlsView, ReportKPIsView, UploadVideoFileView, DeleteUserVideoView
+                    ListUserVideoUrlsView, ReportKPIsView, UploadVideoFileView, DeleteUserVideoView, \
+                    StartMultipartVideoUploadView, MultipartVideoUploadPartUrlView, \
+                    CompleteMultipartVideoUploadView, AbortMultipartVideoUploadView
 from .annotation_views import (
     AnnotationEventCreateView,
     AnnotationEventDetailView,
@@ -21,6 +23,10 @@ urlpatterns = [
     path('delete/', DeleteUserFileView.as_view(), name='delete-user-file'),
     path('video-url/', UploadVideoUrlView.as_view(), name='upload-video-url'),
     path('video-upload/', UploadVideoFileView.as_view(), name='upload-video-file'),
+    path('video-upload/multipart/start/', StartMultipartVideoUploadView.as_view(), name='video-upload-multipart-start'),
+    path('video-upload/multipart/part-url/', MultipartVideoUploadPartUrlView.as_view(), name='video-upload-multipart-part-url'),
+    path('video-upload/multipart/complete/', CompleteMultipartVideoUploadView.as_view(), name='video-upload-multipart-complete'),
+    path('video-upload/multipart/abort/', AbortMultipartVideoUploadView.as_view(), name='video-upload-multipart-abort'),
     path('my-video-urls/', ListUserVideoUrlsView.as_view(), name='list-video-urls'),
     path('my-video-urls/<int:video_id>/', DeleteUserVideoView.as_view(), name='delete-video-url'),
     path('kpis/', ReportKPIsView.as_view(), name='report-kpis"'),

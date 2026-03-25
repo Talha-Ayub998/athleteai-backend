@@ -25,6 +25,10 @@ from reports.serializers import VideoUrlSerializer, VideoUrlReadSerializer, Vide
 # add imports at the top of reports/views.py
 from users.credit_service import reserve_credit, commit_credit, CreditCommitError
 
+ALLOWED_VIDEO_EXTENSIONS = (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")
+MULTIPART_PART_SIZE_BYTES = 10 * 1024 * 1024
+MAX_MULTIPART_VIDEO_SIZE_BYTES = 10 * 1024 * 1024 * 1024  # 10GB
+
 
 def _extract_s3_key_from_url(raw_url: str):
     if not raw_url:
@@ -42,6 +46,26 @@ def _normalize_errors(raw_errors):
     if isinstance(raw_errors, list):
         return [str(err) for err in raw_errors]
     return [str(raw_errors)]
+
+
+def _normalized_video_metadata(file_name, content_type):
+    normalized_name = str(file_name or "").strip()
+    if not normalized_name:
+        return None, None, {"error": "file_name is required."}
+    lower_name = normalized_name.lower()
+    if not lower_name.endswith(ALLOWED_VIDEO_EXTENSIONS):
+        return None, None, {"error": "Unsupported video format."}
+
+    raw_content_type = (str(content_type or "").strip().lower())
+    guessed_content_type = (mimetypes.guess_type(lower_name)[0] or "").lower().strip()
+    final_content_type = raw_content_type or guessed_content_type
+
+    if raw_content_type and not raw_content_type.startswith("video/"):
+        return None, None, {"error": f"Only video files are allowed. Received content_type: {raw_content_type}"}
+    if not final_content_type.startswith("video/"):
+        return None, None, {"error": "Only video files are allowed. Could not detect a valid video MIME type."}
+
+    return normalized_name, final_content_type, None
 
 
 class UploadExcelFileView(APIView):
@@ -485,23 +509,12 @@ class UploadVideoFileView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         video_file = serializer.validated_data["video"]
-        file_name = (video_file.name or "").lower()
-        allowed_ext = (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")
-        if not file_name.endswith(allowed_ext):
-            return Response({"error": "Unsupported video format."}, status=status.HTTP_400_BAD_REQUEST)
-        raw_content_type = (getattr(video_file, "content_type", "") or "").lower().strip()
-        guessed_content_type = (mimetypes.guess_type(file_name)[0] or "").lower().strip()
-        content_type = raw_content_type or guessed_content_type
-        if raw_content_type and not raw_content_type.startswith("video/"):
-            return Response(
-                {"error": f"Only video files are allowed. Received content_type: {raw_content_type}"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if not content_type.startswith("video/"):
-            return Response(
-                {"error": "Only video files are allowed. Could not detect a valid video MIME type."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        _, content_type, validation_error = _normalized_video_metadata(
+            file_name=getattr(video_file, "name", ""),
+            content_type=getattr(video_file, "content_type", ""),
+        )
+        if validation_error:
+            return Response(validation_error, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             file_hash = get_file_hash(video_file)
@@ -570,6 +583,248 @@ class UploadVideoFileView(APIView):
                 **read_payload,
             },
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class StartMultipartVideoUploadView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    def post(self, request):
+        file_name = request.data.get("file_name")
+        content_type = request.data.get("content_type")
+        file_size_bytes = request.data.get("file_size_bytes")
+
+        normalized_name, final_content_type, validation_error = _normalized_video_metadata(file_name, content_type)
+        if validation_error:
+            return Response(validation_error, status=status.HTTP_400_BAD_REQUEST)
+
+        size_val = None
+        if file_size_bytes not in (None, ""):
+            try:
+                size_val = int(file_size_bytes)
+            except (TypeError, ValueError):
+                return Response({"error": "file_size_bytes must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            if size_val <= 0:
+                return Response({"error": "file_size_bytes must be > 0."}, status=status.HTTP_400_BAD_REQUEST)
+            if size_val > MAX_MULTIPART_VIDEO_SIZE_BYTES:
+                return Response(
+                    {
+                        "error": f"File is too large. Max supported size is {MAX_MULTIPART_VIDEO_SIZE_BYTES} bytes.",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        s3 = S3Service()
+        s3_key = s3.build_video_key(user_id=request.user.id, file_name=normalized_name)
+        upload_result = s3.create_multipart_upload(
+            key=s3_key,
+            content_type=final_content_type,
+            file_name=normalized_name,
+        )
+        upload_id = upload_result.get("upload_id")
+        if not upload_id:
+            return Response(
+                {"error": upload_result.get("error") or "Failed to start multipart upload."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        total_parts = None
+        if size_val:
+            total_parts = max(1, (size_val + MULTIPART_PART_SIZE_BYTES - 1) // MULTIPART_PART_SIZE_BYTES)
+
+        return Response(
+            {
+                "status": "success",
+                "upload_id": upload_id,
+                "s3_key": s3_key,
+                "url": s3.build_s3_public_url(s3_key),
+                "file_name": normalized_name,
+                "content_type": final_content_type,
+                "file_size_bytes": size_val,
+                "part_size_bytes": MULTIPART_PART_SIZE_BYTES,
+                "total_parts": total_parts,
+                "expires_in_seconds": 3600,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class MultipartVideoUploadPartUrlView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    def post(self, request):
+        upload_id = str(request.data.get("upload_id") or "").strip()
+        s3_key = str(request.data.get("s3_key") or "").strip()
+        part_number = request.data.get("part_number")
+
+        if not upload_id:
+            return Response({"error": "upload_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not s3_key:
+            return Response({"error": "s3_key is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not s3_key.startswith(f"user_videos/{request.user.id}/"):
+            return Response({"error": "Invalid s3_key for authenticated user."}, status=status.HTTP_403_FORBIDDEN)
+
+        try:
+            part_number_int = int(part_number)
+        except (TypeError, ValueError):
+            return Response({"error": "part_number must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+        if part_number_int < 1 or part_number_int > 10000:
+            return Response({"error": "part_number must be between 1 and 10000."}, status=status.HTTP_400_BAD_REQUEST)
+
+        s3 = S3Service()
+        presigned_url = s3.generate_presigned_upload_part_url(
+            key=s3_key,
+            upload_id=upload_id,
+            part_number=part_number_int,
+            expires_in=3600,
+        )
+        if not presigned_url:
+            return Response({"error": "Failed to generate part upload URL."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response(
+            {
+                "status": "success",
+                "upload_id": upload_id,
+                "s3_key": s3_key,
+                "part_number": part_number_int,
+                "upload_url": presigned_url,
+                "expires_in_seconds": 3600,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class CompleteMultipartVideoUploadView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    def post(self, request):
+        upload_id = str(request.data.get("upload_id") or "").strip()
+        s3_key = str(request.data.get("s3_key") or "").strip()
+        file_name = request.data.get("file_name")
+        content_type = request.data.get("content_type")
+        file_size_bytes = request.data.get("file_size_bytes")
+        parts = request.data.get("parts") or []
+
+        if not upload_id:
+            return Response({"error": "upload_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not s3_key:
+            return Response({"error": "s3_key is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not s3_key.startswith(f"user_videos/{request.user.id}/"):
+            return Response({"error": "Invalid s3_key for authenticated user."}, status=status.HTTP_403_FORBIDDEN)
+        if not isinstance(parts, list) or not parts:
+            return Response({"error": "parts must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized_name, final_content_type, validation_error = _normalized_video_metadata(file_name, content_type)
+        if validation_error:
+            return Response(validation_error, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized_parts = []
+        seen_part_numbers = set()
+        for item in parts:
+            if not isinstance(item, dict):
+                return Response({"error": "Each part must be an object with part_number and etag."}, status=status.HTTP_400_BAD_REQUEST)
+            part_number = item.get("part_number")
+            etag = str(item.get("etag") or "").strip()
+            try:
+                part_number_int = int(part_number)
+            except (TypeError, ValueError):
+                return Response({"error": "Each part_number must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            if part_number_int < 1 or part_number_int > 10000:
+                return Response({"error": "Each part_number must be between 1 and 10000."}, status=status.HTTP_400_BAD_REQUEST)
+            if not etag:
+                return Response({"error": f"etag is required for part {part_number_int}."}, status=status.HTTP_400_BAD_REQUEST)
+            if part_number_int in seen_part_numbers:
+                return Response({"error": f"Duplicate part_number found: {part_number_int}."}, status=status.HTTP_400_BAD_REQUEST)
+            seen_part_numbers.add(part_number_int)
+            normalized_parts.append(
+                {
+                    "PartNumber": part_number_int,
+                    "ETag": etag,
+                }
+            )
+        normalized_parts.sort(key=lambda x: x["PartNumber"])
+
+        size_val = None
+        if file_size_bytes not in (None, ""):
+            try:
+                size_val = int(file_size_bytes)
+            except (TypeError, ValueError):
+                return Response({"error": "file_size_bytes must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            if size_val <= 0:
+                return Response({"error": "file_size_bytes must be > 0."}, status=status.HTTP_400_BAD_REQUEST)
+
+        s3 = S3Service()
+        complete_result = s3.complete_multipart_upload(
+            key=s3_key,
+            upload_id=upload_id,
+            parts=normalized_parts,
+        )
+        if complete_result.get("error"):
+            return Response({"error": complete_result["error"]}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        video_url = complete_result["url"]
+        obj, created = VideoUrl.objects.get_or_create(
+            user=request.user,
+            url=video_url,
+            defaults={
+                "s3_key": s3_key,
+                "file_name": normalized_name,
+                "content_type": final_content_type,
+                "file_size_bytes": size_val,
+            },
+        )
+        if not created:
+            dirty = False
+            if not obj.s3_key:
+                obj.s3_key = s3_key
+                dirty = True
+            if not obj.file_name:
+                obj.file_name = normalized_name
+                dirty = True
+            if not obj.content_type:
+                obj.content_type = final_content_type
+                dirty = True
+            if not obj.file_size_bytes and size_val:
+                obj.file_size_bytes = size_val
+                dirty = True
+            if dirty:
+                obj.save(update_fields=["s3_key", "file_name", "content_type", "file_size_bytes"])
+
+        read_payload = VideoUrlReadSerializer(obj).data
+        return Response(
+            {
+                "status": "success",
+                "message": "Multipart video upload completed successfully." if created else "Video already exists.",
+                **read_payload,
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class AbortMultipartVideoUploadView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    def post(self, request):
+        upload_id = str(request.data.get("upload_id") or "").strip()
+        s3_key = str(request.data.get("s3_key") or "").strip()
+
+        if not upload_id:
+            return Response({"error": "upload_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not s3_key:
+            return Response({"error": "s3_key is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not s3_key.startswith(f"user_videos/{request.user.id}/"):
+            return Response({"error": "Invalid s3_key for authenticated user."}, status=status.HTTP_403_FORBIDDEN)
+
+        s3 = S3Service()
+        result = s3.abort_multipart_upload(key=s3_key, upload_id=upload_id)
+        if result.get("status") != "aborted":
+            return Response(
+                {"error": "Failed to abort multipart upload.", "result": result},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        return Response(
+            {"status": "success", "message": "Multipart upload aborted.", "s3_key": s3_key, "upload_id": upload_id},
+            status=status.HTTP_200_OK,
         )
 
 
