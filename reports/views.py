@@ -661,7 +661,9 @@ class MultipartVideoUploadPartUrlView(APIView):
             return Response({"error": "upload_id is required."}, status=status.HTTP_400_BAD_REQUEST)
         if not s3_key:
             return Response({"error": "s3_key is required."}, status=status.HTTP_400_BAD_REQUEST)
-        if not s3_key.startswith(f"user_videos/{request.user.id}/"):
+        s3 = S3Service()
+        expected_prefix = s3.user_videos_prefix(request.user.id)
+        if not s3_key.startswith(expected_prefix):
             return Response({"error": "Invalid s3_key for authenticated user."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
@@ -671,7 +673,6 @@ class MultipartVideoUploadPartUrlView(APIView):
         if part_number_int < 1 or part_number_int > 10000:
             return Response({"error": "part_number must be between 1 and 10000."}, status=status.HTTP_400_BAD_REQUEST)
 
-        s3 = S3Service()
         presigned_url = s3.generate_presigned_upload_part_url(
             key=s3_key,
             upload_id=upload_id,
@@ -709,7 +710,9 @@ class CompleteMultipartVideoUploadView(APIView):
             return Response({"error": "upload_id is required."}, status=status.HTTP_400_BAD_REQUEST)
         if not s3_key:
             return Response({"error": "s3_key is required."}, status=status.HTTP_400_BAD_REQUEST)
-        if not s3_key.startswith(f"user_videos/{request.user.id}/"):
+        s3 = S3Service()
+        expected_prefix = s3.user_videos_prefix(request.user.id)
+        if not s3_key.startswith(expected_prefix):
             return Response({"error": "Invalid s3_key for authenticated user."}, status=status.HTTP_403_FORBIDDEN)
         if not isinstance(parts, list) or not parts:
             return Response({"error": "parts must be a non-empty list."}, status=status.HTTP_400_BAD_REQUEST)
@@ -753,7 +756,6 @@ class CompleteMultipartVideoUploadView(APIView):
             if size_val <= 0:
                 return Response({"error": "file_size_bytes must be > 0."}, status=status.HTTP_400_BAD_REQUEST)
 
-        s3 = S3Service()
         complete_result = s3.complete_multipart_upload(
             key=s3_key,
             upload_id=upload_id,
@@ -812,10 +814,11 @@ class AbortMultipartVideoUploadView(APIView):
             return Response({"error": "upload_id is required."}, status=status.HTTP_400_BAD_REQUEST)
         if not s3_key:
             return Response({"error": "s3_key is required."}, status=status.HTTP_400_BAD_REQUEST)
-        if not s3_key.startswith(f"user_videos/{request.user.id}/"):
+        s3 = S3Service()
+        expected_prefix = s3.user_videos_prefix(request.user.id)
+        if not s3_key.startswith(expected_prefix):
             return Response({"error": "Invalid s3_key for authenticated user."}, status=status.HTTP_403_FORBIDDEN)
 
-        s3 = S3Service()
         result = s3.abort_multipart_upload(key=s3_key, upload_id=upload_id)
         if result.get("status") != "aborted":
             return Response(

@@ -20,6 +20,19 @@ class S3Service:
         )
         self.bucket_name = os.getenv('AWS_STORAGE_BUCKET_NAME')
 
+    def _normalized_key_prefix(self):
+        raw = (os.getenv("S3_KEY_PREFIX") or "").strip().strip("/")
+        return f"{raw}/" if raw else ""
+
+    def _with_prefix(self, key):
+        return f"{self._normalized_key_prefix()}{key.lstrip('/')}"
+
+    def user_uploads_prefix(self, user_id):
+        return self._with_prefix(f"user_uploads/{user_id}/")
+
+    def user_videos_prefix(self, user_id):
+        return self._with_prefix(f"user_videos/{user_id}/")
+
 
     def upload_files(self, files, user_id, use_uuid_prefix=True):
         """
@@ -33,7 +46,7 @@ class S3Service:
             # Some frameworks leave name on a wrapped file; keep original but sanitize
             safe_name = file_obj.name.replace(" ", "_")
             filename = f"{uuid.uuid4()}_{safe_name}" if use_uuid_prefix else safe_name
-            key = f"user_uploads/{user_id}/{filename}"
+            key = self._with_prefix(f"user_uploads/{user_id}/{filename}")
 
             try:
                 # ALWAYS rewind before uploading (file may have been read already)
@@ -70,7 +83,7 @@ class S3Service:
         """
         safe_name = file_obj.name.replace(" ", "_")
         filename = f"{uuid.uuid4()}_{safe_name}"
-        key = f"user_videos/{user_id}/{filename}"
+        key = self._with_prefix(f"user_videos/{user_id}/{filename}")
         content_type = getattr(file_obj, "content_type", None) or "application/octet-stream"
 
         try:
@@ -101,7 +114,7 @@ class S3Service:
     def build_video_key(self, user_id, file_name):
         safe_name = (file_name or "video").replace(" ", "_")
         filename = f"{uuid.uuid4()}_{safe_name}"
-        return f"user_videos/{user_id}/{filename}"
+        return self._with_prefix(f"user_videos/{user_id}/{filename}")
 
     def build_s3_public_url(self, key):
         return f"https://{self.bucket_name}.s3.{os.getenv('AWS_REGION')}.amazonaws.com/{key}"
@@ -186,7 +199,7 @@ class S3Service:
 
 
     def list_user_files(self, user_id):
-        prefix = f"user_uploads/{user_id}/"
+        prefix = self.user_uploads_prefix(user_id)
         response = self.s3_client.list_objects_v2(Bucket=self.bucket_name, Prefix=prefix)
 
         files = []
