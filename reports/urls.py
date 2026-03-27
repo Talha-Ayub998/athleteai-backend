@@ -3,7 +3,7 @@ from .views import UploadExcelFileView, ListUserReportsView, \
                     DeleteUserFileView, UploadVideoUrlView, \
                     ListUserVideoUrlsView, ReportKPIsView, UploadVideoFileView, DeleteUserVideoView, \
                     StartMultipartVideoUploadView, MultipartVideoUploadPartUrlView, \
-                    CompleteMultipartVideoUploadView, AbortMultipartVideoUploadView
+                    CompleteMultipartVideoUploadView, AbortMultipartVideoUploadView, ListMultipartPartsView
 from .annotation_views import (
     AnnotationEventCreateView,
     AnnotationEventDetailView,
@@ -27,6 +27,7 @@ urlpatterns = [
     path('video-upload/multipart/part-url/', MultipartVideoUploadPartUrlView.as_view(), name='video-upload-multipart-part-url'),
     path('video-upload/multipart/complete/', CompleteMultipartVideoUploadView.as_view(), name='video-upload-multipart-complete'),
     path('video-upload/multipart/abort/', AbortMultipartVideoUploadView.as_view(), name='video-upload-multipart-abort'),
+    path('video-upload/multipart/list-parts/', ListMultipartPartsView.as_view(), name='video-upload-multipart-list-parts'),
     path('my-video-urls/', ListUserVideoUrlsView.as_view(), name='list-video-urls'),
     path('my-video-urls/<int:video_id>/', DeleteUserVideoView.as_view(), name='delete-video-url'),
     path('kpis/', ReportKPIsView.as_view(), name='report-kpis"'),

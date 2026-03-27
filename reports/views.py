@@ -831,6 +831,43 @@ class AbortMultipartVideoUploadView(APIView):
         )
 
 
+class ListMultipartPartsView(APIView):
+    permission_classes = [IsAuthenticated, BlockSuperUserPermission]
+
+    def post(self, request):
+        upload_id = str(request.data.get("upload_id") or "").strip()
+        s3_key = str(request.data.get("s3_key") or "").strip()
+
+        if not upload_id:
+            return Response({"error": "upload_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not s3_key:
+            return Response({"error": "s3_key is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        s3 = S3Service()
+        expected_prefix = s3.user_videos_prefix(request.user.id)
+        if not s3_key.startswith(expected_prefix):
+            return Response({"error": "Invalid s3_key for authenticated user."}, status=status.HTTP_403_FORBIDDEN)
+
+        result = s3.list_multipart_parts(key=s3_key, upload_id=upload_id)
+
+        if result.get("status") == "not_found":
+            return Response(
+                {"status": "not_found", "message": "No incomplete upload found. It may have been completed or aborted.", "total_parts": 0, "parts": []},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if result.get("status") == "error":
+            return Response({"error": "Failed to list parts.", "detail": result.get("error")}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        parts = [
+            {"part_number": p["PartNumber"], "size_bytes": p["Size"], "etag": p["ETag"], "last_modified": p["LastModified"]}
+            for p in result["parts"]
+        ]
+        return Response(
+            {"status": "success", "upload_id": upload_id, "s3_key": s3_key, "total_parts_uploaded": result["total_parts"], "parts": parts},
+            status=status.HTTP_200_OK,
+        )
+
+
 class DefaultPagination(PageNumberPagination):
     page_size = 20
     page_size_query_param = "page_size"

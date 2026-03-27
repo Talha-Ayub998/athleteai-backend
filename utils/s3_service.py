@@ -183,6 +183,24 @@ class S3Service:
             print(f"Abort multipart upload error ({key}):", e)
             return {"status": "error", "key": key, "upload_id": upload_id}
 
+    def list_multipart_parts(self, key, upload_id):
+        try:
+            parts = []
+            kwargs = {"Bucket": self.bucket_name, "Key": key, "UploadId": upload_id}
+            while True:
+                response = self.s3_client.list_parts(**kwargs)
+                parts.extend(response.get("Parts", []))
+                if response.get("IsTruncated"):
+                    kwargs["PartNumberMarker"] = response["NextPartNumberMarker"]
+                else:
+                    break
+            return {"status": "success", "parts": parts, "total_parts": len(parts)}
+        except ClientError as e:
+            error_code = e.response["Error"]["Code"]
+            if error_code == "NoSuchUpload":
+                return {"status": "not_found", "parts": [], "total_parts": 0}
+            return {"status": "error", "error": str(e)}
+
     def generate_presigned_get_url(self, key, expires_in=3600, download_filename=None):
         try:
             params = {"Bucket": self.bucket_name, "Key": key}
