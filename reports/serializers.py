@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from django.db.models import Q
 from .models import (
     VideoUrl,
@@ -9,9 +9,66 @@ from .models import (
 )
 from utils.s3_service import S3Service
 
+
+YOUTUBE_ALLOWED_HOSTS = {
+    "youtube.com",
+    "www.youtube.com",
+    "m.youtube.com",
+    "music.youtube.com",
+    "youtu.be",
+    "www.youtu.be",
+}
+
+
+def _extract_youtube_video_id(raw_url):
+    if not raw_url:
+        return None
+
+    parsed = urlparse(str(raw_url).strip())
+    host = (parsed.netloc or "").lower().strip()
+    path = (parsed.path or "").strip("/")
+    if not host or host not in YOUTUBE_ALLOWED_HOSTS:
+        return None
+
+    video_id = None
+    if host.endswith("youtu.be"):
+        video_id = path.split("/")[0] if path else None
+    else:
+        path_parts = [p for p in path.split("/") if p]
+        if path == "watch":
+            video_id = parse_qs(parsed.query or "").get("v", [None])[0]
+        elif len(path_parts) >= 2 and path_parts[0] in {"shorts", "embed", "live"}:
+            video_id = path_parts[1]
+
+    if not video_id:
+        return None
+    video_id = str(video_id).strip()
+    if len(video_id) != 11:
+        return None
+    for ch in video_id:
+        if not (ch.isalnum() or ch in {"-", "_"}):
+            return None
+    return video_id
+
+
+def _normalize_youtube_url(raw_url):
+    video_id = _extract_youtube_video_id(raw_url)
+    if not video_id:
+        return None, None
+    return f"https://www.youtube.com/watch?v={video_id}", video_id
+
+
 # Serializer to validate input
 class VideoUrlSerializer(serializers.Serializer):
     video_url = serializers.URLField(required=True)
+
+    def validate_video_url(self, value):
+        normalized_url, _video_id = _normalize_youtube_url(value)
+        if not normalized_url:
+            raise serializers.ValidationError(
+                "Only valid YouTube URLs are allowed (youtube.com or youtu.be)."
+            )
+        return normalized_url
 
 
 class VideoUploadSerializer(serializers.Serializer):
@@ -20,6 +77,10 @@ class VideoUploadSerializer(serializers.Serializer):
 
 class VideoUrlReadSerializer(serializers.ModelSerializer):
     playback_url = serializers.SerializerMethodField()
+    source_type = serializers.SerializerMethodField()
+    is_youtube_link = serializers.SerializerMethodField()
+    youtube_video_id = serializers.SerializerMethodField()
+    youtube_embed_url = serializers.SerializerMethodField()
     session_id = serializers.SerializerMethodField()
     session_status = serializers.SerializerMethodField()
     session_updated_at = serializers.SerializerMethodField()
@@ -29,6 +90,10 @@ class VideoUrlReadSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "url",
+            "source_type",
+            "is_youtube_link",
+            "youtube_video_id",
+            "youtube_embed_url",
             "s3_key",
             "file_name",
             "content_type",
@@ -41,8 +106,33 @@ class VideoUrlReadSerializer(serializers.ModelSerializer):
             "created_at",
         )
 
+    def get_source_type(self, obj):
+        raw_url = str(obj.url or "").strip()
+        if obj.s3_key:
+            return "s3"
+        if _extract_youtube_video_id(raw_url):
+            return "youtube"
+        parsed = urlparse(raw_url)
+        if parsed.netloc.endswith("amazonaws.com"):
+            return "s3"
+        return "external"
+
+    def get_is_youtube_link(self, obj):
+        return bool(_extract_youtube_video_id(obj.url or ""))
+
+    def get_youtube_video_id(self, obj):
+        return _extract_youtube_video_id(obj.url or "")
+
+    def get_youtube_embed_url(self, obj):
+        video_id = self.get_youtube_video_id(obj)
+        if not video_id:
+            return None
+        return f"https://www.youtube.com/embed/{video_id}"
+
     def get_playback_url(self, obj):
         raw_url = obj.url or ""
+        if _extract_youtube_video_id(raw_url):
+            return raw_url
         if obj.s3_key:
             try:
                 s3 = S3Service()
