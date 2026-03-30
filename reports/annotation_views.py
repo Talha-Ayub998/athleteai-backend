@@ -27,6 +27,7 @@ from reports.serializers import (
     AnnotationSessionSerializer,
 )
 from users.credit_service import CreditCommitError, commit_credit, reserve_credit
+from users.models import CustomUser
 from utils.excel_to_pdf import count_matches, process_excel_file
 from utils.helpers import get_file_hash
 from utils.s3_service import S3Service
@@ -545,11 +546,26 @@ class AnnotationFinalizeView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        athlete_profile = _normalize_athlete_profile(request.user, request.data.get("athlete"))
+        is_admin = getattr(request.user, "role", None) == "admin"
+        target_user = request.user
+        target_user_id = request.data.get("user_id")
+        if target_user_id not in (None, ""):
+            if not is_admin:
+                return Response(
+                    {"error": "Only admins can finalize reports for other users."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            try:
+                target_user = CustomUser.objects.get(id=int(target_user_id))
+            except (TypeError, ValueError):
+                return Response({"error": "user_id must be an integer."}, status=status.HTTP_400_BAD_REQUEST)
+            except CustomUser.DoesNotExist:
+                return Response({"error": "Invalid user_id provided."}, status=status.HTTP_400_BAD_REQUEST)
+        athlete_profile = _normalize_athlete_profile(target_user, request.data.get("athlete"))
         xlsx_bytes = _build_workbook_bytes(athlete_profile, stats_counters, match_numbers, match_results_map)
 
         now_dt = timezone.now()
-        fallback_name = athlete_profile["name"].replace(" ", "") or f"user_{request.user.id}"
+        fallback_name = athlete_profile["name"].replace(" ", "") or f"user_{target_user.id}"
         requested_filename = request.data.get("filename") or fallback_name
         filename = _build_dated_filename(str(requested_filename), now_dt)
 
@@ -568,11 +584,10 @@ class AnnotationFinalizeView(APIView):
         if match_count <= 0:
             return Response({"error": "No matches found in generated workbook."}, status=status.HTTP_400_BAD_REQUEST)
 
-        is_admin = getattr(request.user, "role", None) == "admin"
         must_check_credits = not is_admin
         ticket = None
         if must_check_credits:
-            ok, ticket, msg = reserve_credit(request.user, units=match_count)
+            ok, ticket, msg = reserve_credit(target_user, units=match_count)
             if not ok:
                 return Response(
                     {
@@ -599,7 +614,7 @@ class AnnotationFinalizeView(APIView):
         except Exception:
             return Response({"error": "Failed to hash generated workbook."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        duplicate_report = AthleteReport.objects.filter(user=request.user, file_hash=file_hash).first()
+        duplicate_report = AthleteReport.objects.filter(user=target_user, file_hash=file_hash).first()
         if duplicate_report:
             return Response(
                 {
@@ -641,7 +656,7 @@ class AnnotationFinalizeView(APIView):
         s3_url_uploaded = None
         try:
             excel_file.seek(0)
-            s3_result = s3.upload_files([excel_file], user_id=request.user.id)
+            s3_result = s3.upload_files([excel_file], user_id=target_user.id)
             if not s3_result or "key" not in s3_result[0]:
                 return Response({"error": "Failed to upload generated file to storage."}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -652,7 +667,7 @@ class AnnotationFinalizeView(APIView):
 
             with transaction.atomic():
                 report = AthleteReport.objects.create(
-                    user=request.user,
+                    user=target_user,
                     filename=filename,
                     pdf_data=result,
                     file_size_mb=file_size_mb,
@@ -673,10 +688,12 @@ class AnnotationFinalizeView(APIView):
                     "message": "Annotation session finalized and report created.",
                     "session_id": session.id,
                     "report_id": report.id,
+                    "report_owner_user_id": target_user.id,
+                    "report_owner_email": target_user.email,
                     "s3_key": s3_key_uploaded,
                     "s3_url": s3_url_uploaded,
                     "match_count": match_count,
-                    "credit_source": "admin_bypass" if is_admin else getattr(ticket, "source", None),
+                    "credit_source": "admin_bypass" if (is_admin and not must_check_credits) else getattr(ticket, "source", None),
                 },
                 status=status.HTTP_200_OK,
             )
