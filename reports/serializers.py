@@ -77,10 +77,7 @@ class VideoUploadSerializer(serializers.Serializer):
 
 class VideoUrlReadSerializer(serializers.ModelSerializer):
     playback_url = serializers.SerializerMethodField()
-    source_type = serializers.SerializerMethodField()
     is_youtube_link = serializers.SerializerMethodField()
-    youtube_video_id = serializers.SerializerMethodField()
-    youtube_embed_url = serializers.SerializerMethodField()
     session_id = serializers.SerializerMethodField()
     session_status = serializers.SerializerMethodField()
     session_updated_at = serializers.SerializerMethodField()
@@ -90,10 +87,7 @@ class VideoUrlReadSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "url",
-            "source_type",
             "is_youtube_link",
-            "youtube_video_id",
-            "youtube_embed_url",
             "s3_key",
             "file_name",
             "content_type",
@@ -106,28 +100,8 @@ class VideoUrlReadSerializer(serializers.ModelSerializer):
             "created_at",
         )
 
-    def get_source_type(self, obj):
-        raw_url = str(obj.url or "").strip()
-        if obj.s3_key:
-            return "s3"
-        if _extract_youtube_video_id(raw_url):
-            return "youtube"
-        parsed = urlparse(raw_url)
-        if parsed.netloc.endswith("amazonaws.com"):
-            return "s3"
-        return "external"
-
     def get_is_youtube_link(self, obj):
         return bool(_extract_youtube_video_id(obj.url or ""))
-
-    def get_youtube_video_id(self, obj):
-        return _extract_youtube_video_id(obj.url or "")
-
-    def get_youtube_embed_url(self, obj):
-        video_id = self.get_youtube_video_id(obj)
-        if not video_id:
-            return None
-        return f"https://www.youtube.com/embed/{video_id}"
 
     def get_playback_url(self, obj):
         raw_url = obj.url or ""
