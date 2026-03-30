@@ -68,22 +68,6 @@ def _normalized_video_metadata(file_name, content_type):
     return normalized_name, final_content_type, None
 
 
-def _normalized_file_hash(file_hash):
-    if file_hash in (None, ""):
-        return None
-    normalized = str(file_hash).strip().lower().replace('"', "")
-    return normalized or None
-
-
-def _validated_sha256_file_hash(file_hash, required=False):
-    normalized = _normalized_file_hash(file_hash)
-    if required and not normalized:
-        return None, {"error": "file_hash is required for multipart uploads."}
-    if normalized and not re.fullmatch(r"[a-f0-9]{64}", normalized):
-        return None, {"error": "file_hash must be a SHA-256 hex string (64 chars)."}
-    return normalized, None
-
-
 class UploadExcelFileView(APIView):
     parser_classes = [MultiPartParser]
     permission_classes = [IsAuthenticated, BlockSuperUserPermission]
@@ -609,34 +593,10 @@ class StartMultipartVideoUploadView(APIView):
         file_name = request.data.get("file_name")
         content_type = request.data.get("content_type")
         file_size_bytes = request.data.get("file_size_bytes")
-        file_hash, file_hash_error = _validated_sha256_file_hash(
-            request.data.get("file_hash"),
-            required=True,
-        )
-        if file_hash_error:
-            return Response(file_hash_error, status=status.HTTP_400_BAD_REQUEST)
 
         normalized_name, final_content_type, validation_error = _normalized_video_metadata(file_name, content_type)
         if validation_error:
             return Response(validation_error, status=status.HTTP_400_BAD_REQUEST)
-
-        if file_hash:
-            duplicate = (
-                VideoUrl.objects
-                .filter(user=request.user, file_hash=file_hash)
-                .order_by("created_at", "id")
-                .first()
-            )
-            if duplicate:
-                return Response(
-                    {
-                        "status": "duplicate",
-                        "message": "This video has already been uploaded.",
-                        "upload_required": False,
-                        **VideoUrlReadSerializer(duplicate).data,
-                    },
-                    status=status.HTTP_200_OK,
-                )
 
         size_val = None
         if file_size_bytes not in (None, ""):
@@ -681,7 +641,6 @@ class StartMultipartVideoUploadView(APIView):
                 "file_name": normalized_name,
                 "content_type": final_content_type,
                 "file_size_bytes": size_val,
-                "file_hash": file_hash,
                 "part_size_bytes": MULTIPART_PART_SIZE_BYTES,
                 "total_parts": total_parts,
                 "expires_in_seconds": 3600,
@@ -745,12 +704,6 @@ class CompleteMultipartVideoUploadView(APIView):
         file_name = request.data.get("file_name")
         content_type = request.data.get("content_type")
         file_size_bytes = request.data.get("file_size_bytes")
-        file_hash, file_hash_error = _validated_sha256_file_hash(
-            request.data.get("file_hash"),
-            required=True,
-        )
-        if file_hash_error:
-            return Response(file_hash_error, status=status.HTTP_400_BAD_REQUEST)
         parts = request.data.get("parts") or []
 
         if not upload_id:
@@ -803,25 +756,6 @@ class CompleteMultipartVideoUploadView(APIView):
             if size_val <= 0:
                 return Response({"error": "file_size_bytes must be > 0."}, status=status.HTTP_400_BAD_REQUEST)
 
-        if file_hash:
-            duplicate = (
-                VideoUrl.objects
-                .filter(user=request.user, file_hash=file_hash)
-                .order_by("created_at", "id")
-                .first()
-            )
-            if duplicate:
-                s3.abort_multipart_upload(key=s3_key, upload_id=upload_id)
-                return Response(
-                    {
-                        "status": "duplicate",
-                        "message": "This video has already been uploaded.",
-                        "upload_required": False,
-                        **VideoUrlReadSerializer(duplicate).data,
-                    },
-                    status=status.HTTP_200_OK,
-                )
-
         complete_result = s3.complete_multipart_upload(
             key=s3_key,
             upload_id=upload_id,
@@ -839,7 +773,6 @@ class CompleteMultipartVideoUploadView(APIView):
                 "file_name": normalized_name,
                 "content_type": final_content_type,
                 "file_size_bytes": size_val,
-                "file_hash": file_hash,
             },
         )
         if not created:
@@ -856,11 +789,8 @@ class CompleteMultipartVideoUploadView(APIView):
             if not obj.file_size_bytes and size_val:
                 obj.file_size_bytes = size_val
                 dirty = True
-            if not obj.file_hash and file_hash:
-                obj.file_hash = file_hash
-                dirty = True
             if dirty:
-                obj.save(update_fields=["s3_key", "file_name", "content_type", "file_size_bytes", "file_hash"])
+                obj.save(update_fields=["s3_key", "file_name", "content_type", "file_size_bytes"])
 
         read_payload = VideoUrlReadSerializer(obj).data
         return Response(
