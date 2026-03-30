@@ -168,6 +168,8 @@ class VideoUrlReadSerializer(serializers.ModelSerializer):
 class AnnotationSessionSerializer(serializers.ModelSerializer):
     events_count = serializers.SerializerMethodField()
     match_results_count = serializers.SerializerMethodField()
+    report_owner_user_id = serializers.SerializerMethodField()
+    report_owner_email = serializers.SerializerMethodField()
     video_id = serializers.PrimaryKeyRelatedField(
         source="video",
         queryset=VideoUrl.objects.all(),
@@ -185,6 +187,8 @@ class AnnotationSessionSerializer(serializers.ModelSerializer):
             "status",
             "finalized_at",
             "generated_report",
+            "report_owner_user_id",
+            "report_owner_email",
             "events_count",
             "match_results_count",
             "created_at",
@@ -224,6 +228,21 @@ class AnnotationSessionSerializer(serializers.ModelSerializer):
         if val is not None:
             return int(val)
         return obj.match_results.count()
+
+    def get_report_owner_user_id(self, obj):
+        report = getattr(obj, "generated_report", None)
+        if not report:
+            return None
+        return getattr(report, "user_id", None)
+
+    def get_report_owner_email(self, obj):
+        report = getattr(obj, "generated_report", None)
+        if not report:
+            return None
+        try:
+            return getattr(report.user, "email", None)
+        except Exception:
+            return None
 
 
 class AnnotationEventSerializer(serializers.ModelSerializer):
