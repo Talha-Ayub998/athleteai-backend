@@ -143,3 +143,63 @@ class AnnotationMatchResult(models.Model):
 
     def __str__(self):
         return f"Session {self.session_id} | Match-{self.match_number} | {self.result}"
+
+
+class MultiVideoSession(models.Model):
+    STATUS_DRAFT = "draft"
+    STATUS_COMPLETED = "completed"
+    STATUS_CHOICES = (
+        (STATUS_DRAFT, "Draft"),
+        (STATUS_COMPLETED, "Completed"),
+    )
+
+    created_by = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name="multi_video_sessions")
+    title = models.CharField(max_length=255, blank=True, null=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    generated_report = models.ForeignKey(
+        AthleteReport,
+        on_delete=models.SET_NULL,
+        related_name="multi_video_sessions",
+        blank=True,
+        null=True,
+    )
+    finalized_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at",)
+
+    def __str__(self):
+        return f"MultiVideoSession {self.id} by {self.created_by.email} ({self.status})"
+
+
+class MultiVideoSessionItem(models.Model):
+    STATUS_PENDING = "pending"
+    STATUS_IN_PROGRESS = "in_progress"
+    STATUS_COMPLETED = "completed"
+    STATUS_CHOICES = (
+        (STATUS_PENDING, "Pending"),
+        (STATUS_IN_PROGRESS, "In Progress"),
+        (STATUS_COMPLETED, "Completed"),
+    )
+
+    session = models.ForeignKey(MultiVideoSession, on_delete=models.CASCADE, related_name="items")
+    video = models.ForeignKey(VideoUrl, on_delete=models.SET_NULL, null=True, related_name="multi_session_items")
+    annotation_session = models.OneToOneField(
+        AnnotationSession,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="multi_session_item",
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    is_removed = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("created_at",)
+
+    def __str__(self):
+        return f"Item {self.id} | Session {self.session_id} | {self.status}"
