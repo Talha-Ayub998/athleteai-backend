@@ -4,6 +4,8 @@ from .models import (
     AnnotationMatchResult,
     AnnotationSession,
     AthleteReport,
+    MultiVideoSession,
+    MultiVideoSessionItem,
     VideoUrl,
 )
 
@@ -50,3 +52,36 @@ class AnnotationMatchResultAdmin(admin.ModelAdmin):
     list_filter = ("result", "match_type", "referee_decision", "disqualified", "created_at")
     search_fields = ("session__user__email", "opponent")
     ordering = ("session_id", "match_number")
+
+
+class MultiVideoSessionItemInline(admin.TabularInline):
+    model = MultiVideoSessionItem
+    extra = 0
+    readonly_fields = ("annotation_session", "status", "is_removed", "created_at", "updated_at")
+    fields = ("video", "annotation_session", "status", "is_removed", "created_at")
+
+
+@admin.register(MultiVideoSession)
+class MultiVideoSessionAdmin(admin.ModelAdmin):
+    list_display = ("id", "created_by", "title", "status", "total_videos", "completed_videos", "finalized_at", "created_at")
+    list_filter = ("status", "created_at")
+    search_fields = ("created_by__email", "title")
+    ordering = ("-created_at",)
+    readonly_fields = ("finalized_at", "generated_report", "created_at", "updated_at")
+    inlines = [MultiVideoSessionItemInline]
+
+    def total_videos(self, obj):
+        return obj.items.filter(is_removed=False).count()
+    total_videos.short_description = "Total Videos"
+
+    def completed_videos(self, obj):
+        return obj.items.filter(is_removed=False, status=MultiVideoSessionItem.STATUS_COMPLETED).count()
+    completed_videos.short_description = "Completed"
+
+
+@admin.register(MultiVideoSessionItem)
+class MultiVideoSessionItemAdmin(admin.ModelAdmin):
+    list_display = ("id", "session", "video", "annotation_session", "status", "is_removed", "created_at")
+    list_filter = ("status", "is_removed", "created_at")
+    search_fields = ("session__created_by__email", "video__file_name")
+    ordering = ("-created_at",)

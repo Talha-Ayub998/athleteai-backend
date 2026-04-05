@@ -4,6 +4,15 @@ from .views import UploadExcelFileView, ListUserReportsView, \
                     ListUserVideoUrlsView, ReportKPIsView, UploadVideoFileView, DeleteUserVideoView, \
                     StartMultipartVideoUploadView, MultipartVideoUploadPartUrlView, \
                     CompleteMultipartVideoUploadView, AbortMultipartVideoUploadView, ListMultipartPartsView
+from .multi_session_views import (
+    MultiVideoSessionListCreateView,
+    MultiVideoSessionDetailView,
+    MultiVideoSessionStartVideoView,
+    MultiVideoSessionCompleteVideoView,
+    MultiVideoSessionRemoveVideoView,
+    MultiVideoSessionFinalizeView,
+    MultiVideoSessionDownloadXlsxView,
+)
 from .annotation_views import (
     AnnotationEventCreateView,
     AnnotationEventDetailView,
@@ -31,6 +40,15 @@ urlpatterns = [
     path('my-video-urls/', ListUserVideoUrlsView.as_view(), name='list-video-urls'),
     path('my-video-urls/<int:video_id>/', DeleteUserVideoView.as_view(), name='delete-video-url'),
     path('kpis/', ReportKPIsView.as_view(), name='report-kpis"'),
+
+    # Multi-video session
+    path('multi-session/', MultiVideoSessionListCreateView.as_view(), name='multi-session-list-create'),
+    path('multi-session/<int:session_id>/', MultiVideoSessionDetailView.as_view(), name='multi-session-detail'),
+    path('multi-session/<int:session_id>/start-video/<int:item_id>/', MultiVideoSessionStartVideoView.as_view(), name='multi-session-start-video'),
+    path('multi-session/<int:session_id>/complete-video/<int:item_id>/', MultiVideoSessionCompleteVideoView.as_view(), name='multi-session-complete-video'),
+    path('multi-session/<int:session_id>/remove-video/<int:item_id>/', MultiVideoSessionRemoveVideoView.as_view(), name='multi-session-remove-video'),
+    path('multi-session/<int:session_id>/finalize/', MultiVideoSessionFinalizeView.as_view(), name='multi-session-finalize'),
+    path('multi-session/<int:session_id>/download-xlsx/', MultiVideoSessionDownloadXlsxView.as_view(), name='multi-session-download-xlsx'),
     path("annotation-sessions/", AnnotationSessionListCreateView.as_view(), name="annotation-session-list-create"),
     path(
         "annotation-sessions/latest-by-video/",
